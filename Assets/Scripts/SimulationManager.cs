@@ -17,7 +17,13 @@ namespace AgesOfConflict
 
         [Header("Troop Movement")]
         [Tooltip("World cells travelled per second. Troops move at this speed regardless of route length.")]
-        public float troopMoveSpeed = 35f;
+        public float troopMoveSpeed = 3.5f;
+        [Tooltip("World cells travelled per second while a line is attacking.")]
+        public float attackMoveSpeed = 1.5f;
+        [Tooltip("World-space distance at which opposing troop groups are engaged.")]
+        public float combatContactDistance = 2f;
+        [Tooltip("An attacking line stops advancing once its total force falls below this amount.")]
+        public int minimumAttackingArmy = 20;
 
         [Header("Simulation State")]
         public bool isRunning = true;
@@ -44,12 +50,18 @@ namespace AgesOfConflict
         private Texture2D overlayTexture;
         private Texture2D garrisonMarkerTexture;
         private GUIStyle fieldGarrisonLabelStyle;
+        private GUIStyle lineArmyLabelStyle;
 
         private class ArmyRoute
         {
             public int nationId;
             public List<Vector3> points;
             public List<TroopGroup> groups;
+            public bool isAttacking;
+            public int targetNationId = -1;
+            public Vector2 attackDirection;
+            public List<Vector2> borderApproachPath;
+            public int borderApproachWaypoint;
         }
 
         private class MovingTroop
@@ -151,6 +163,11 @@ namespace AgesOfConflict
                 if (destinationCity != null && destinationCity.nationId == selectedArmyRoute.nationId)
                 {
                     MoveRouteToCity(selectedArmyRoute, destinationCity);
+                }
+                else if (TryGetOwnedCell(worldPos, out Cell targetCell)
+                    && targetCell.nationId != selectedArmyRoute.nationId)
+                {
+                    StartAttack(selectedArmyRoute, worldPos, targetCell.nationId);
                 }
                 else
                 {
@@ -452,6 +469,121 @@ namespace AgesOfConflict
             commandMessage = $"Troops are returning to {destination.name}.";
         }
 
+        private void StartAttack(ArmyRoute route, Vector3 target, int targetNationId)
+        {
+            if (route.points.Count < 2)
+            {
+                commandMessage = "Field garrisons cannot attack yet.";
+                return;
+            }
+            if (route.groups.Count == 0)
+            {
+                commandMessage = "Wait for the line's troops to arrive before attacking.";
+                return;
+            }
+            if (!TryFindPathToEnemyBorder(route.groups[0].position, route.nationId, targetNationId, out List<Vector2> approach))
+            {
+                commandMessage = "No reachable border with that nation exists.";
+                return;
+            }
+
+            Vector2 border = approach[approach.Count - 1];
+            Vector2 heading = new Vector2(target.x, target.y) - border;
+            if (heading.sqrMagnitude < 0.001f)
+                heading = new Vector2(1f, 0f);
+
+            route.isAttacking = true;
+            route.targetNationId = targetNationId;
+            route.attackDirection = heading.normalized;
+            route.borderApproachPath = approach;
+            route.borderApproachWaypoint = 1;
+            commandMessage = $"Line is moving to attack {worldGenerator.Nations[targetNationId].name}.";
+        }
+
+        private bool TryFindPathToEnemyBorder(
+            Vector2 start, int nationId, int targetNationId, out List<Vector2> path)
+        {
+            path = null;
+            int width = worldGenerator.width;
+            int height = worldGenerator.height;
+            int startX = Mathf.FloorToInt(start.x);
+            int startY = Mathf.FloorToInt(start.y);
+            if (!IsFriendlyCell(startX, startY, nationId))
+                return false;
+
+            int cellCount = width * height;
+            if (pathSearchVisited == null || pathSearchVisited.Length != cellCount)
+            {
+                pathSearchVisited = new int[cellCount];
+                pathSearchPrevious = new int[cellCount];
+                pathSearchVersion = 0;
+            }
+            if (pathSearchVersion == int.MaxValue)
+            {
+                System.Array.Clear(pathSearchVisited, 0, pathSearchVisited.Length);
+                pathSearchVersion = 0;
+            }
+
+            int version = ++pathSearchVersion;
+            int startIndex = startY * width + startX;
+            int destinationIndex = -1;
+            Queue<int> open = new Queue<int>();
+            open.Enqueue(startIndex);
+            pathSearchVisited[startIndex] = version;
+            pathSearchPrevious[startIndex] = -1;
+            int[] dx = { 0, 0, 1, -1 };
+            int[] dy = { 1, -1, 0, 0 };
+
+            while (open.Count > 0)
+            {
+                int current = open.Dequeue();
+                int x = current % width;
+                int y = current / width;
+                bool touchesTarget = false;
+                for (int d = 0; d < 4; d++)
+                {
+                    int nx = x + dx[d];
+                    int ny = y + dy[d];
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height
+                        && worldGenerator.Grid[ny * width + nx].nationId == targetNationId)
+                    {
+                        touchesTarget = true;
+                        break;
+                    }
+                }
+                if (touchesTarget)
+                {
+                    destinationIndex = current;
+                    break;
+                }
+
+                for (int d = 0; d < 4; d++)
+                {
+                    int nx = x + dx[d];
+                    int ny = y + dy[d];
+                    if (!IsFriendlyCell(nx, ny, nationId))
+                        continue;
+                    int next = ny * width + nx;
+                    if (pathSearchVisited[next] == version)
+                        continue;
+                    pathSearchVisited[next] = version;
+                    pathSearchPrevious[next] = current;
+                    open.Enqueue(next);
+                }
+            }
+
+            if (destinationIndex < 0)
+                return false;
+
+            List<Vector2> reverse = new List<Vector2>();
+            for (int current = destinationIndex; current >= 0; current = pathSearchPrevious[current])
+                reverse.Add(new Vector2(current % width + 0.5f, current / width + 0.5f));
+            reverse.Reverse();
+            path = new List<Vector2>(reverse.Count + 1) { start };
+            path.AddRange(reverse);
+            return true;
+        }
+
         private List<TroopGroup> SplitTroops(List<TroopGroup> groups)
         {
             List<TroopGroup> result = new List<TroopGroup>();
@@ -607,6 +739,21 @@ namespace AgesOfConflict
                 && worldGenerator.Grid[y * worldGenerator.width + x].nationId == nationId;
         }
 
+        private bool TryGetOwnedCell(Vector3 worldPosition, out Cell cell)
+        {
+            cell = default;
+            if (worldGenerator == null || worldGenerator.Grid == null)
+                return false;
+
+            int x = Mathf.FloorToInt(worldPosition.x);
+            int y = Mathf.FloorToInt(worldPosition.y);
+            if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                return false;
+
+            cell = worldGenerator.Grid[y * worldGenerator.width + x];
+            return cell.IsLand && cell.HasOwner;
+        }
+
         private bool IsInsideSelectedTerritory(Vector3 worldPosition)
         {
             if (worldGenerator == null || selectedNation == null)
@@ -707,7 +854,10 @@ namespace AgesOfConflict
                 {
                     tickTimer -= tickInterval;
                     nationSimulator.StepSimulation(tickInterval);
+                    ResolveLineCombat();
                 }
+
+                UpdateAttackingRoutes(Time.deltaTime * speedMultiplier);
             }
         }
 
@@ -781,6 +931,261 @@ namespace AgesOfConflict
                     count++;
             }
             return count;
+        }
+
+        private void UpdateAttackingRoutes(float deltaTime)
+        {
+            foreach (ArmyRoute route in armyRoutes)
+            {
+                if (!route.isAttacking || route.groups.Count == 0)
+                    continue;
+
+                if (GetRouteSoldierCount(route) < minimumAttackingArmy)
+                {
+                    route.isAttacking = false;
+                    commandMessage = $"Attack halted: the line has fewer than {minimumAttackingArmy} soldiers.";
+                    continue;
+                }
+
+                if (route.borderApproachPath != null && route.borderApproachWaypoint < route.borderApproachPath.Count)
+                {
+                    MoveAttackFormationAlongApproach(route, deltaTime);
+                    continue;
+                }
+
+                HashSet<TroopGroup> engaged = GetEngagedGroups(route);
+                AdvanceUnengagedGroups(route, engaged, deltaTime);
+            }
+        }
+
+        private void MoveAttackFormationAlongApproach(ArmyRoute route, float deltaTime)
+        {
+            float remainingDistance = Mathf.Max(0f, attackMoveSpeed) * deltaTime;
+            while (remainingDistance > 0f && route.borderApproachWaypoint < route.borderApproachPath.Count)
+            {
+                Vector2 target = route.borderApproachPath[route.borderApproachWaypoint];
+                Vector2 anchor = route.groups[0].position;
+                float distance = Vector2.Distance(anchor, target);
+                if (distance <= remainingDistance)
+                {
+                    if (!TryTranslateRouteWithinFriendlyTerritory(route, target - anchor))
+                        return;
+                    remainingDistance -= distance;
+                    route.borderApproachWaypoint++;
+                }
+                else
+                {
+                    if (!TryTranslateRouteWithinFriendlyTerritory(route, (target - anchor).normalized * remainingDistance))
+                        return;
+                    remainingDistance = 0f;
+                }
+            }
+        }
+
+        private bool TryTranslateRouteWithinFriendlyTerritory(ArmyRoute route, Vector2 offset)
+        {
+            foreach (TroopGroup group in route.groups)
+            {
+                Vector2 next = group.position + offset;
+                if (!IsFriendlyCell(Mathf.FloorToInt(next.x), Mathf.FloorToInt(next.y), route.nationId))
+                {
+                    route.isAttacking = false;
+                    commandMessage = "The line cannot reach that border without leaving friendly territory.";
+                    return false;
+                }
+            }
+
+            TranslateRoute(route, offset);
+            return true;
+        }
+
+        private void AdvanceUnengagedGroups(ArmyRoute route, HashSet<TroopGroup> engaged, float deltaTime)
+        {
+            float distance = Mathf.Max(0f, attackMoveSpeed) * deltaTime;
+            if (distance <= 0f)
+                return;
+
+            HashSet<int> capturedCells = new HashSet<int>();
+            foreach (TroopGroup group in route.groups)
+            {
+                if (engaged.Contains(group))
+                    continue;
+
+                Vector2 next = group.position + route.attackDirection * distance;
+                int x = Mathf.FloorToInt(next.x);
+                int y = Mathf.FloorToInt(next.y);
+                if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                    continue;
+
+                Cell cell = worldGenerator.Grid[y * worldGenerator.width + x];
+                if (!cell.IsLand)
+                    continue;
+
+                group.position = next;
+                if (cell.nationId >= 0 && cell.nationId != route.nationId)
+                    capturedCells.Add(y * worldGenerator.width + x);
+            }
+
+            RebuildAttackLine(route);
+            CollectEnemyCellsUnderLine(route, capturedCells);
+            if (capturedCells.Count > 0)
+                nationSimulator.CaptureEnemyCells(capturedCells, route.nationId);
+        }
+
+        private void CollectEnemyCellsUnderLine(ArmyRoute route, HashSet<int> capturedCells)
+        {
+            for (int i = 1; i < route.points.Count; i++)
+            {
+                Vector3 start = route.points[i - 1];
+                Vector3 end = route.points[i];
+                int samples = Mathf.Max(1, Mathf.CeilToInt(Vector3.Distance(start, end) * 2f));
+                for (int sample = 0; sample <= samples; sample++)
+                {
+                    Vector3 point = Vector3.Lerp(start, end, sample / (float)samples);
+                    int x = Mathf.FloorToInt(point.x);
+                    int y = Mathf.FloorToInt(point.y);
+                    if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                        continue;
+
+                    int index = y * worldGenerator.width + x;
+                    Cell cell = worldGenerator.Grid[index];
+                    if (cell.IsLand && cell.nationId >= 0 && cell.nationId != route.nationId)
+                        capturedCells.Add(index);
+                }
+            }
+        }
+
+        private void TranslateRoute(ArmyRoute route, Vector2 offset)
+        {
+            foreach (TroopGroup group in route.groups)
+                group.position += offset;
+            for (int i = 0; i < route.points.Count; i++)
+                route.points[i] += new Vector3(offset.x, offset.y, 0f);
+        }
+
+        private HashSet<TroopGroup> GetEngagedGroups(ArmyRoute route)
+        {
+            HashSet<TroopGroup> engaged = new HashSet<TroopGroup>();
+            float rangeSquared = combatContactDistance * combatContactDistance;
+            foreach (ArmyRoute enemyRoute in armyRoutes)
+            {
+                if (enemyRoute == route || enemyRoute.nationId == route.nationId || enemyRoute.points.Count < 2)
+                    continue;
+
+                foreach (TroopGroup group in route.groups)
+                {
+                    foreach (TroopGroup enemyGroup in enemyRoute.groups)
+                    {
+                        if ((group.position - enemyGroup.position).sqrMagnitude <= rangeSquared)
+                        {
+                            engaged.Add(group);
+                            break;
+                        }
+                    }
+                }
+            }
+            return engaged;
+        }
+
+        private void ResolveLineCombat()
+        {
+            HashSet<TroopGroup> alreadyFighting = new HashSet<TroopGroup>();
+            float rangeSquared = combatContactDistance * combatContactDistance;
+            for (int i = 0; i < armyRoutes.Count; i++)
+            {
+                ArmyRoute attacker = armyRoutes[i];
+                if (attacker.points.Count < 2) continue;
+                foreach (TroopGroup group in attacker.groups)
+                {
+                    if (alreadyFighting.Contains(group)) continue;
+
+                    TroopGroup closestEnemy = null;
+                    float closestDistance = rangeSquared;
+                    for (int j = 0; j < armyRoutes.Count; j++)
+                    {
+                        ArmyRoute defender = armyRoutes[j];
+                        if (defender == attacker || defender.nationId == attacker.nationId || defender.points.Count < 2)
+                            continue;
+                        foreach (TroopGroup enemy in defender.groups)
+                        {
+                            if (alreadyFighting.Contains(enemy)) continue;
+                            float distance = (group.position - enemy.position).sqrMagnitude;
+                            if (distance <= closestDistance)
+                            {
+                                closestDistance = distance;
+                                closestEnemy = enemy;
+                            }
+                        }
+                    }
+
+                    if (closestEnemy == null) continue;
+                    alreadyFighting.Add(group);
+                    alreadyFighting.Add(closestEnemy);
+                    int attackerLoss = Mathf.Min(group.soldierCount, Random.Range(1, 4));
+                    int defenderLoss = Mathf.Min(closestEnemy.soldierCount, Random.Range(1, 4));
+                    group.soldierCount -= attackerLoss;
+                    closestEnemy.soldierCount -= defenderLoss;
+                    nationSimulator.RemoveFieldTroops(attacker.nationId, attackerLoss);
+                    nationSimulator.RemoveFieldTroops(closestEnemy.nationId, defenderLoss);
+                }
+            }
+
+            RemoveDestroyedTroopGroups();
+        }
+
+        private void RemoveDestroyedTroopGroups()
+        {
+            for (int i = armyRoutes.Count - 1; i >= 0; i--)
+            {
+                ArmyRoute route = armyRoutes[i];
+                bool lostTroopGroup = false;
+                for (int g = route.groups.Count - 1; g >= 0; g--)
+                {
+                    if (route.groups[g].soldierCount > 0) continue;
+                    route.groups.RemoveAt(g);
+                    lostTroopGroup = true;
+                }
+
+                // Only combat-caused losses may destroy a route. Empty routes are
+                // also used as destinations while their rectangles are in transit.
+                if (!lostTroopGroup || route.groups.Count > 0 || HasPendingArrivalsFor(route)) continue;
+                armyRoutes.RemoveAt(i);
+                if (selectedArmyRoute == route)
+                    selectedArmyRoute = null;
+            }
+        }
+
+        private bool HasPendingArrivalsFor(ArmyRoute route)
+        {
+            foreach (MovingTroop moving in movingTroops)
+            {
+                if (moving.destinationRoute == route)
+                    return true;
+            }
+            return false;
+        }
+
+        private void RebuildAttackLine(ArmyRoute route)
+        {
+            if (route.groups.Count < 2)
+                return;
+
+            Vector2 perpendicular = new Vector2(-route.attackDirection.y, route.attackDirection.x);
+            route.groups.Sort((a, b) =>
+                Vector2.Dot(a.position, perpendicular).CompareTo(Vector2.Dot(b.position, perpendicular)));
+            route.points = new List<Vector3>
+            {
+                new Vector3(route.groups[0].position.x, route.groups[0].position.y, 0f),
+                new Vector3(route.groups[route.groups.Count - 1].position.x, route.groups[route.groups.Count - 1].position.y, 0f)
+            };
+        }
+
+        private static int GetRouteSoldierCount(ArmyRoute route)
+        {
+            int total = 0;
+            foreach (TroopGroup group in route.groups)
+                total += group.soldierCount;
+            return total;
         }
 
         private void UpdateHoveredNation()
@@ -1055,6 +1460,7 @@ namespace AgesOfConflict
             GUILayout.Label("• LMB a black route or troop marker, then RMB-drag to redraw it");
             GUILayout.Label("• With a route selected, RMB-click to turn it into a field garrison");
             GUILayout.Label("• With units selected, RMB-click a friendly city to return them");
+            GUILayout.Label("• With a line selected, RMB-click enemy land to attack");
             GUILayout.Label("• Routes may be drawn only inside your selected territory");
             GUILayout.Label("• Territory expands automatically; recruitment is manual");
 
@@ -1183,6 +1589,8 @@ namespace AgesOfConflict
                 if (route == selectedArmyRoute)
                     DrawWorldPath(route.points, Color.white, 10f);
                 DrawWorldPath(route.points, Color.black, 6f);
+                if (route.points.Count > 1)
+                    DrawLineArmyCount(route);
                 foreach (TroopGroup group in route.groups)
                 {
                     if (route.points.Count == 1)
@@ -1226,6 +1634,39 @@ namespace AgesOfConflict
             DrawGuiLine(new Vector2(marker.x + 3f, marker.y + 3f), new Vector2(marker.xMax - 3f, marker.yMax - 3f), Color.white, 2f);
             DrawGuiLine(new Vector2(marker.xMax - 3f, marker.y + 3f), new Vector2(marker.x + 3f, marker.yMax - 3f), Color.white, 2f);
             GUI.color = oldColor;
+        }
+
+        private void DrawLineArmyCount(ArmyRoute route)
+        {
+            int soldiers = 0;
+            Vector2 center = Vector2.zero;
+            foreach (TroopGroup group in route.groups)
+            {
+                soldiers += group.soldierCount;
+                center += group.position;
+            }
+            if (route.groups.Count == 0)
+                return;
+
+            center /= route.groups.Count;
+            if (lineArmyLabelStyle == null)
+            {
+                lineArmyLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 13,
+                    fontStyle = FontStyle.Bold
+                };
+                lineArmyLabelStyle.normal.textColor = Color.white;
+            }
+
+            Vector2 gui = WorldToGui(new Vector3(center.x, center.y, 0f));
+            Rect label = new Rect(gui.x - 22f, gui.y - 29f, 44f, 18f);
+            Color oldColor = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, 0.75f);
+            GUI.DrawTexture(label, Texture2D.whiteTexture);
+            GUI.color = oldColor;
+            GUI.Label(label, soldiers.ToString(), lineArmyLabelStyle);
         }
 
         private void DrawFieldGarrisonMarker(TroopGroup group, bool isSelected)

@@ -293,6 +293,84 @@ namespace AgesOfConflict
             nation.fieldArmyCount = Mathf.Max(0, nation.fieldArmyCount - amount);
         }
 
+        public void RemoveFieldTroops(int nationId, int amount)
+        {
+            if (nations == null || nationId < 0 || nationId >= nations.Count || amount <= 0)
+                return;
+
+            nations[nationId].fieldArmyCount = Mathf.Max(0, nations[nationId].fieldArmyCount - amount);
+        }
+
+        /// <summary>Transfers enemy-owned land to an attacker and refreshes affected borders.</summary>
+        public int CaptureEnemyCells(IEnumerable<int> cellIndices, int attackerId)
+        {
+            if (grid == null || nations == null || attackerId < 0 || attackerId >= nations.Count)
+                return 0;
+
+            int captured = 0;
+            HashSet<int> refreshCells = new HashSet<int>();
+            foreach (int index in cellIndices)
+            {
+                if (index < 0 || index >= grid.Length || !grid[index].IsLand)
+                    continue;
+
+                int defenderId = grid[index].nationId;
+                if (defenderId < 0 || defenderId == attackerId)
+                    continue;
+
+                grid[index].nationId = (short)attackerId;
+                nations[attackerId].territorySize++;
+                if (defenderId < nations.Count)
+                    nations[defenderId].territorySize = Mathf.Max(0, nations[defenderId].territorySize - 1);
+                captured++;
+
+                refreshCells.Add(index);
+                int x = index % width;
+                int y = index / width;
+                for (int i = 0; i < 4; i++)
+                {
+                    int nx = x + dx[i];
+                    int ny = y + dy[i];
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                        refreshCells.Add(ny * width + nx);
+                }
+            }
+
+            if (captured == 0)
+                return 0;
+
+            BuildInitialFrontiers();
+            if (worldRenderer != null)
+            {
+                foreach (int index in refreshCells)
+                    RefreshCellRendering(index);
+                worldRenderer.ApplyTextureChanges();
+            }
+            return captured;
+        }
+
+        private void RefreshCellRendering(int cellIndex)
+        {
+            int x = cellIndex % width;
+            int y = cellIndex / width;
+            Cell cell = grid[cellIndex];
+            if (cell.HasOwner && cell.nationId >= 0 && cell.nationId < nations.Count)
+            {
+                Nation nation = nations[cell.nationId];
+                worldRenderer.SetPixelColor(cellIndex,
+                    worldRenderer.showBorders && WorldRenderer.IsBorderCell(grid, x, y, width, height, nation.id)
+                        ? worldRenderer.borderColor
+                        : worldRenderer.GetDisplayColor(nation.id, nation.color));
+                return;
+            }
+
+            worldRenderer.SetPixelColor(cellIndex, cell.IsLand
+                ? worldRenderer.unclaimedLandColor
+                : cell.terrain == (byte)TerrainType.DeepOcean
+                    ? worldRenderer.deepOceanColor
+                    : worldRenderer.shallowOceanColor);
+        }
+
         private Nation GetNation(City city)
         {
             if (city == null || nations == null || city.nationId < 0 || city.nationId >= nations.Count)
