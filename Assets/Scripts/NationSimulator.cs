@@ -272,6 +272,17 @@ namespace AgesOfConflict
             return true;
         }
 
+        public bool DeployTroops(City origin, int amount)
+        {
+            Nation nation = GetNation(origin);
+            if (origin == null || nation == null || amount <= 0 || amount > origin.armyCount)
+                return false;
+
+            origin.armyCount -= amount;
+            nation.fieldArmyCount += amount;
+            return true;
+        }
+
         private Nation GetNation(City city)
         {
             if (city == null || nations == null || city.nationId < 0 || city.nationId >= nations.Count)
@@ -288,7 +299,7 @@ namespace AgesOfConflict
                 int totalArmy = 0;
                 for (int c = 0; c < n.cities.Count; c++)
                     totalArmy += n.cities[c].armyCount;
-                n.armyCount = totalArmy;
+                n.armyCount = totalArmy + n.fieldArmyCount;
 
                 // 1. Income based on territory size
                 n.incomePerSec = n.territorySize * incomePerPixel;

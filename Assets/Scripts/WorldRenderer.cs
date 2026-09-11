@@ -24,6 +24,7 @@ namespace AgesOfConflict
         public bool showCities = true;
         [Tooltip("Display color for the nation currently controlled by the player.")]
         public Color32 selectedNationColor = new Color32(255, 225, 65, 255);
+        public Color32 selectedCityColor = new Color32(70, 255, 170, 255);
 
         private Texture2D worldTexture;
         private Color32[] pixelBuffer;
@@ -35,6 +36,7 @@ namespace AgesOfConflict
         private int renderedWidth;
         private int renderedHeight;
         private int selectedNationId = -1;
+        private City selectedCity;
 
         public int SelectedNationId => selectedNationId;
 
@@ -193,10 +195,23 @@ namespace AgesOfConflict
             return nationId == selectedNationId ? selectedNationColor : nationColor;
         }
 
+        public void SetSelectedCity(City city)
+        {
+            if (selectedCity == city)
+                return;
+
+            selectedCity = city;
+            if (renderedGrid != null && renderedNations != null)
+            {
+                RenderWorld(renderedGrid, renderedNations, renderedWidth, renderedHeight);
+            }
+        }
+
         public void DrawCityMarker(City city, int width, int height)
         {
             int cx = city.position.x;
             int cy = city.position.y;
+            bool isSelected = city == selectedCity;
 
             if (city.isCapital)
             {
@@ -220,7 +235,7 @@ namespace AgesOfConflict
                                 }
                                 else if (distSq > 1.5f)
                                 {
-                                    pixelBuffer[pIdx] = capitalGold; // Gold body
+                                    pixelBuffer[pIdx] = isSelected ? selectedCityColor : capitalGold;
                                 }
                                 else
                                 {
@@ -253,7 +268,7 @@ namespace AgesOfConflict
                                 }
                                 else if (distSq > 0.5f)
                                 {
-                                    pixelBuffer[pIdx] = citySilver; // Silver stone fill
+                                    pixelBuffer[pIdx] = isSelected ? selectedCityColor : citySilver;
                                 }
                                 else
                                 {

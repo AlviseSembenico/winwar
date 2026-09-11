@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace AgesOfConflict
@@ -22,12 +23,15 @@ namespace AgesOfConflict
         // Event for right-click tap (not drag)
         public event Action<Vector3> OnRightClickTap;
         public event Action<Vector3, Vector3> OnRightDragCompleted;
+        public event Action<List<Vector3>> OnRightPathUpdated;
+        public event Action<List<Vector3>> OnRightPathCompleted;
         public event Action<Vector3> OnLeftClickTap;
         public event Action<Vector3, Vector3> OnLeftDragCompleted;
 
         // SimulationManager uses this to reserve city-to-city drags for troop orders.
         public Func<Vector3, bool> ShouldReserveRightDrag;
         public Func<Vector3, bool> ShouldReserveLeftDrag;
+        public Func<bool> ShouldDrawRightPath;
 
         private Camera cam;
         private Vector3 dragOriginWorld;
@@ -35,6 +39,7 @@ namespace AgesOfConflict
         private bool isDragging = false;
         private bool hasMovedBeyondThreshold = false;
         private bool isReservedRightDrag = false;
+        private readonly List<Vector3> rightDragPath = new List<Vector3>();
         private Vector3 leftDragOriginWorld;
         private Vector3 leftDragStartScreen;
         private bool isReservedLeftDrag;
@@ -184,6 +189,20 @@ namespace AgesOfConflict
             return false;
         }
 
+        private bool WasRightButtonDown()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+            {
+                return UnityEngine.InputSystem.Mouse.current.rightButton.wasPressedThisFrame;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetMouseButtonDown(1)) return true;
+#endif
+            return false;
+        }
+
         private bool IsLeftButtonPressed()
         {
 #if ENABLE_INPUT_SYSTEM
@@ -229,11 +248,17 @@ namespace AgesOfConflict
 
             if (WasDragButtonDown())
             {
+                bool startedWithRightButton = WasRightButtonDown();
                 dragStartScreen = mouseScreen;
                 dragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
                 isDragging = false;
                 hasMovedBeyondThreshold = false;
-                isReservedRightDrag = ShouldReserveRightDrag != null && ShouldReserveRightDrag(dragOriginWorld);
+                isReservedRightDrag = startedWithRightButton
+                    && ((ShouldReserveRightDrag != null && ShouldReserveRightDrag(dragOriginWorld))
+                        || (ShouldDrawRightPath != null && ShouldDrawRightPath()));
+                rightDragPath.Clear();
+                if (isReservedRightDrag)
+                    rightDragPath.Add(dragOriginWorld);
             }
 
             if (IsDragButtonPressed())
@@ -251,6 +276,16 @@ namespace AgesOfConflict
                     targetPosition += diff;
                     dragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
                 }
+
+                if (isReservedRightDrag)
+                {
+                    Vector3 point = cam.ScreenToWorldPoint(mouseScreen);
+                    if (Vector3.Distance(point, rightDragPath[rightDragPath.Count - 1]) > 1f)
+                    {
+                        rightDragPath.Add(point);
+                        OnRightPathUpdated?.Invoke(rightDragPath);
+                    }
+                }
             }
 
             // Check if right button was released without significant drag (a clean tap!)
@@ -260,6 +295,8 @@ namespace AgesOfConflict
                 if (isReservedRightDrag && hasMovedBeyondThreshold)
                 {
                     OnRightDragCompleted?.Invoke(dragOriginWorld, clickWorld);
+                    rightDragPath.Add(clickWorld);
+                    OnRightPathCompleted?.Invoke(rightDragPath);
                 }
                 else if (!hasMovedBeyondThreshold)
                 {
@@ -267,6 +304,7 @@ namespace AgesOfConflict
                 }
                 isDragging = false;
                 isReservedRightDrag = false;
+                rightDragPath.Clear();
             }
         }
 
@@ -280,6 +318,11 @@ namespace AgesOfConflict
                 leftDragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
                 isReservedLeftDrag = ShouldReserveLeftDrag != null && ShouldReserveLeftDrag(leftDragOriginWorld);
                 leftDragMovedBeyondThreshold = false;
+
+                // Resolve selections immediately on press. This makes returning a
+                // selected field army to a city reliable even when the city icon is
+                // underneath that army's overlay marker.
+                OnLeftClickTap?.Invoke(leftDragOriginWorld);
             }
 
             if (isReservedLeftDrag && IsLeftButtonPressed()
@@ -293,10 +336,6 @@ namespace AgesOfConflict
                 if (isReservedLeftDrag && leftDragMovedBeyondThreshold)
                 {
                     OnLeftDragCompleted?.Invoke(leftDragOriginWorld, cam.ScreenToWorldPoint(mouseScreen));
-                }
-                else if (!leftDragMovedBeyondThreshold)
-                {
-                    OnLeftClickTap?.Invoke(cam.ScreenToWorldPoint(mouseScreen));
                 }
                 isReservedLeftDrag = false;
             }

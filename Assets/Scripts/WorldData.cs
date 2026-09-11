@@ -46,6 +46,21 @@ namespace AgesOfConflict
     }
 
     [System.Serializable]
+    public class TroopGroup
+    {
+        public int nationId;
+        public int soldierCount;
+        public Vector2 position;
+
+        public TroopGroup(int nationId, int soldierCount, Vector2 position)
+        {
+            this.nationId = nationId;
+            this.soldierCount = soldierCount;
+            this.position = position;
+        }
+    }
+
+    [System.Serializable]
     public class Nation
     {
         public int id;
@@ -62,6 +77,7 @@ namespace AgesOfConflict
 
         [Header("Military (Player Managed)")]
         public int armyCount = 20;
+        public int fieldArmyCount;
         public int maxArmyTarget = 500;
 
         [Header("Cities")]

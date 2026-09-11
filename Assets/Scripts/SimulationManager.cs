@@ -29,6 +29,20 @@ namespace AgesOfConflict
         private List<Nation> sortedNations = new List<Nation>();
         private Nation hoveredNation = null;
         private Nation selectedNation = null;
+        private City selectedCity = null;
+        private readonly List<Vector3> troopPathPreview = new List<Vector3>();
+        private readonly List<ArmyRoute> armyRoutes = new List<ArmyRoute>();
+        private ArmyRoute selectedArmyRoute;
+        private Texture2D overlayTexture;
+        private Texture2D garrisonMarkerTexture;
+        private GUIStyle fieldGarrisonLabelStyle;
+
+        private class ArmyRoute
+        {
+            public int nationId;
+            public List<Vector3> points;
+            public List<TroopGroup> groups;
+        }
 
         // Context menu state
         private bool showContextMenu = false;
@@ -80,6 +94,9 @@ namespace AgesOfConflict
                 cameraController.OnLeftClickTap += HandleNationSelection;
                 cameraController.OnLeftDragCompleted += HandleCityDrag;
                 cameraController.ShouldReserveLeftDrag += IsCityAt;
+                cameraController.ShouldDrawRightPath += CanDrawTroopPath;
+                cameraController.OnRightPathUpdated += UpdateTroopPathPreview;
+                cameraController.OnRightPathCompleted += DeployArmyAlongPath;
             }
 
             Regenerate();
@@ -93,11 +110,29 @@ namespace AgesOfConflict
                 cameraController.OnLeftClickTap -= HandleNationSelection;
                 cameraController.OnLeftDragCompleted -= HandleCityDrag;
                 cameraController.ShouldReserveLeftDrag -= IsCityAt;
+                cameraController.ShouldDrawRightPath -= CanDrawTroopPath;
+                cameraController.OnRightPathUpdated -= UpdateTroopPathPreview;
+                cameraController.OnRightPathCompleted -= DeployArmyAlongPath;
+            }
+
+            if (overlayTexture != null)
+            {
+                Destroy(overlayTexture);
+            }
+            if (garrisonMarkerTexture != null)
+            {
+                Destroy(garrisonMarkerTexture);
             }
         }
 
         private void HandleRightClickTap(Vector3 worldPos)
         {
+            if (selectedArmyRoute != null)
+            {
+                CreatePointGarrison(worldPos);
+                return;
+            }
+
             City city = FindCityAt(worldPos);
             if (city != null)
             {
@@ -149,10 +184,59 @@ namespace AgesOfConflict
             showContextMenu = true;
         }
 
+        private void CreatePointGarrison(Vector3 worldPos)
+        {
+            City destinationCity = FindCityAt(worldPos, 4f);
+            if (destinationCity != null)
+            {
+                ReturnArmyToCity(destinationCity);
+                return;
+            }
+
+            if (!IsInsideSelectedTerritory(worldPos))
+            {
+                commandMessage = "A garrison must be placed inside the selected nation's territory.";
+                return;
+            }
+
+            int soldiers = 0;
+            foreach (TroopGroup group in selectedArmyRoute.groups)
+                soldiers += group.soldierCount;
+
+            Vector3 point = new Vector3(worldPos.x, worldPos.y, 0f);
+            selectedArmyRoute.points = new List<Vector3> { point };
+            selectedArmyRoute.groups = new List<TroopGroup>
+            {
+                new TroopGroup(selectedArmyRoute.nationId, soldiers, new Vector2(point.x, point.y))
+            };
+            commandMessage = $"Created a field garrison of {soldiers} soldiers.";
+        }
+
         private void HandleNationSelection(Vector3 worldPos)
         {
             if (worldGenerator == null || worldGenerator.Grid == null)
                 return;
+
+            // Keep a selected route active when the player clicks a city; return
+            // commands use the right mouse button and accept the city label area.
+            City destinationCity = FindCityAt(worldPos, selectedArmyRoute != null ? 4f : 0f);
+            if (selectedArmyRoute != null && destinationCity != null)
+            {
+                commandMessage = "Right-click the city to return the selected units.";
+                return;
+            }
+
+            ArmyRoute route = FindArmyRouteAt(worldPos);
+            if (route != null)
+            {
+                selectedArmyRoute = route;
+                selectedCity = null;
+                selectedNation = worldGenerator.Nations[route.nationId];
+                worldRenderer.SetSelectedNation(selectedNation.id);
+                worldRenderer.SetSelectedCity(null);
+                commandMessage = "Army route selected. Right-drag to redraw it.";
+                return;
+            }
 
             int x = Mathf.FloorToInt(worldPos.x);
             int y = Mathf.FloorToInt(worldPos.y);
@@ -164,13 +248,141 @@ namespace AgesOfConflict
                 return;
 
             selectedNation = worldGenerator.Nations[cell.nationId];
+            selectedCity = FindCityAt(worldPos);
+            selectedArmyRoute = null;
             worldRenderer.SetSelectedNation(selectedNation.id);
+            worldRenderer.SetSelectedCity(selectedCity);
             commandMessage = $"Now controlling {selectedNation.name}.";
+        }
+
+        private void ReturnArmyToCity(City destinationCity)
+        {
+            if (destinationCity.nationId != selectedArmyRoute.nationId)
+            {
+                commandMessage = "Units can only return to a city of their own nation.";
+                return;
+            }
+
+            int soldiers = 0;
+            foreach (TroopGroup group in selectedArmyRoute.groups)
+                soldiers += group.soldierCount;
+
+            Nation nation = worldGenerator.Nations[selectedArmyRoute.nationId];
+            destinationCity.armyCount += soldiers;
+            nation.fieldArmyCount = Mathf.Max(0, nation.fieldArmyCount - soldiers);
+            armyRoutes.Remove(selectedArmyRoute);
+            selectedArmyRoute = null;
+            selectedNation = nation;
+            selectedCity = destinationCity;
+            worldRenderer.SetSelectedNation(nation.id);
+            worldRenderer.SetSelectedCity(destinationCity);
+            commandMessage = $"Returned {soldiers} soldiers to {destinationCity.name}.";
+        }
+
+        private bool CanDrawTroopPath()
+        {
+            return selectedArmyRoute != null
+                || (selectedCity != null && selectedCity.armyCount > 0 && selectedNation != null
+                    && selectedCity.nationId == selectedNation.id);
+        }
+
+        private void UpdateTroopPathPreview(List<Vector3> points)
+        {
+            troopPathPreview.Clear();
+            troopPathPreview.AddRange(GetValidRoutePath(points));
+        }
+
+        private void DeployArmyAlongPath(List<Vector3> drawnPoints)
+        {
+            troopPathPreview.Clear();
+            if (!CanDrawTroopPath())
+                return;
+
+            // The route begins exactly where the player starts drawing; it does not
+            // render an automatic connector between the city and the drawn route.
+            List<Vector3> path = GetValidRoutePath(drawnPoints);
+            if (path.Count < 2)
+            {
+                commandMessage = "Troop routes must stay inside the selected nation's territory.";
+                return;
+            }
+
+            if (selectedArmyRoute != null)
+            {
+                int routeSoldiers = 0;
+                foreach (TroopGroup group in selectedArmyRoute.groups)
+                    routeSoldiers += group.soldierCount;
+
+                selectedArmyRoute.points = path;
+                selectedArmyRoute.groups = BuildTroopGroups(selectedArmyRoute.nationId, routeSoldiers, path);
+                commandMessage = $"Redrew the route for {routeSoldiers} soldiers.";
+                return;
+            }
+
+            int soldiers = selectedCity.armyCount;
+            if (!nationSimulator.DeployTroops(selectedCity, soldiers))
+                return;
+
+            ArmyRoute route = new ArmyRoute
+            {
+                nationId = selectedNation.id,
+                points = path,
+                groups = BuildTroopGroups(selectedNation.id, soldiers, path)
+            };
+            armyRoutes.Add(route);
+            selectedArmyRoute = route;
+            commandMessage = $"Deployed {soldiers} soldiers from {selectedCity.name}.";
+        }
+
+        private List<Vector3> GetValidRoutePath(List<Vector3> rawPath)
+        {
+            List<Vector3> validPath = new List<Vector3>(rawPath.Count);
+            if (selectedNation == null)
+                return validPath;
+
+            for (int i = 0; i < rawPath.Count; i++)
+            {
+                Vector3 point = rawPath[i];
+                if (!IsInsideSelectedTerritory(point))
+                    break;
+
+                if (validPath.Count > 0 && !IsSegmentInsideSelectedTerritory(validPath[validPath.Count - 1], point))
+                    break;
+
+                validPath.Add(point);
+            }
+
+            return validPath;
+        }
+
+        private bool IsInsideSelectedTerritory(Vector3 worldPosition)
+        {
+            if (worldGenerator == null || selectedNation == null)
+                return false;
+
+            int x = Mathf.FloorToInt(worldPosition.x);
+            int y = Mathf.FloorToInt(worldPosition.y);
+            if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                return false;
+
+            return worldGenerator.Grid[y * worldGenerator.width + x].nationId == selectedNation.id;
+        }
+
+        private bool IsSegmentInsideSelectedTerritory(Vector3 start, Vector3 end)
+        {
+            float length = Vector3.Distance(start, end);
+            int samples = Mathf.Max(1, Mathf.CeilToInt(length * 2f));
+            for (int i = 1; i <= samples; i++)
+            {
+                if (!IsInsideSelectedTerritory(Vector3.Lerp(start, end, i / (float)samples)))
+                    return false;
+            }
+            return true;
         }
 
         private bool IsCityAt(Vector3 worldPos) => FindCityAt(worldPos) != null;
 
-        private City FindCityAt(Vector3 worldPos)
+        private City FindCityAt(Vector3 worldPos, float extraHitRadius = 0f)
         {
             if (worldGenerator == null || worldGenerator.Nations == null)
                 return null;
@@ -180,7 +392,7 @@ namespace AgesOfConflict
             {
                 foreach (City city in worldGenerator.Nations[n].cities)
                 {
-                    float hitRadius = city.isCapital ? 4.5f : 3.5f;
+                    float hitRadius = (city.isCapital ? 4.5f : 3.5f) + extraHitRadius;
                     if (Vector2.Distance(point, city.position) <= hitRadius)
                         return city;
                 }
@@ -387,7 +599,12 @@ namespace AgesOfConflict
             currentSeed = worldGenerator.seed;
             activeNations = worldGenerator.Nations.Count;
             selectedNation = null;
+            selectedCity = null;
+            selectedArmyRoute = null;
+            armyRoutes.Clear();
+            troopPathPreview.Clear();
             worldRenderer.SetSelectedNation(-1);
+            worldRenderer.SetSelectedCity(null);
 
             worldRenderer.RenderWorld(worldGenerator.Grid, worldGenerator.Nations, worldGenerator.width, worldGenerator.height);
 
@@ -488,6 +705,11 @@ namespace AgesOfConflict
             GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan");
             GUILayout.Label("• <b>LMB territory</b>: Select nation | <b>RMB city</b>: Recruit");
             GUILayout.Label("• <b>LMB drag city→city</b>: Move troops");
+            GUILayout.Label("• Select a city, then <b>RMB-drag</b> a route to deploy its garrison");
+            GUILayout.Label("• LMB a black route or troop marker, then RMB-drag to redraw it");
+            GUILayout.Label("• With a route selected, RMB-click to turn it into a field garrison");
+            GUILayout.Label("• With units selected, RMB-click a friendly city to return them");
+            GUILayout.Label("• Routes may be drawn only inside your selected territory");
             GUILayout.Label("• Territory expands automatically; recruitment is manual");
 
             // Mouse hover inspector info
@@ -547,6 +769,8 @@ namespace AgesOfConflict
             {
                 GUI.Box(new Rect(Screen.width * 0.5f - 190, 15, 380, 30), commandMessage);
             }
+
+            DrawArmyRouteOverlays();
         }
 
         private void DrawCityGarrisonLabels()
@@ -586,6 +810,230 @@ namespace AgesOfConflict
                     GUI.Label(labelRect, city.armyCount.ToString(), garrisonLabelStyle);
                 }
             }
+        }
+
+        private List<TroopGroup> BuildTroopGroups(int nationId, int soldiers, List<Vector3> path)
+        {
+            const int soldiersPerGroup = 10;
+            int groupCount = Mathf.CeilToInt(soldiers / (float)soldiersPerGroup);
+            List<TroopGroup> groups = new List<TroopGroup>(groupCount);
+            float totalLength = GetPathLength(path);
+
+            for (int i = 0; i < groupCount; i++)
+            {
+                int count = Mathf.Min(soldiersPerGroup, soldiers - i * soldiersPerGroup);
+                float distance = totalLength * (i + 1) / (groupCount + 1);
+                Vector3 position = GetPointOnPath(path, distance);
+                groups.Add(new TroopGroup(nationId, count, new Vector2(position.x, position.y)));
+            }
+
+            return groups;
+        }
+
+        private void DrawArmyRouteOverlays()
+        {
+            foreach (ArmyRoute route in armyRoutes)
+            {
+                if (route == selectedArmyRoute)
+                    DrawWorldPath(route.points, Color.white, 10f);
+                DrawWorldPath(route.points, Color.black, 6f);
+                foreach (TroopGroup group in route.groups)
+                {
+                    if (route.points.Count == 1)
+                        DrawFieldGarrisonMarker(group, route == selectedArmyRoute);
+                    else
+                        DrawTroopGroupMarker(group, route == selectedArmyRoute);
+                }
+            }
+
+            if (troopPathPreview.Count > 1 && selectedNation != null)
+            {
+                DrawWorldPath(troopPathPreview, Color.black, 6f);
+            }
+        }
+
+        private void DrawWorldPath(List<Vector3> path, Color color, float thickness)
+        {
+            for (int i = 1; i < path.Count; i++)
+            {
+                Vector2 a = WorldToGui(path[i - 1]);
+                Vector2 b = WorldToGui(path[i]);
+                DrawGuiLine(a, b, color, thickness);
+            }
+        }
+
+        private void DrawTroopGroupMarker(TroopGroup group, bool isSelected)
+        {
+            Vector2 center = WorldToGui(new Vector3(group.position.x, group.position.y, 0f));
+            Rect marker = new Rect(center.x - 10f, center.y - 7f, 20f, 14f);
+            Color oldColor = GUI.color;
+            if (isSelected)
+            {
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(marker.x - 2f, marker.y - 2f, marker.width + 4f, marker.height + 4f), Texture2D.whiteTexture);
+            }
+            GUI.color = Color.black;
+            GUI.DrawTexture(marker, Texture2D.whiteTexture);
+            DrawGuiLine(new Vector2(marker.x + 3f, marker.y + 3f), new Vector2(marker.xMax - 3f, marker.yMax - 3f), Color.white, 2f);
+            DrawGuiLine(new Vector2(marker.xMax - 3f, marker.y + 3f), new Vector2(marker.x + 3f, marker.yMax - 3f), Color.white, 2f);
+            GUI.color = oldColor;
+        }
+
+        private void DrawFieldGarrisonMarker(TroopGroup group, bool isSelected)
+        {
+            EnsureGarrisonMarkerTexture();
+
+            Vector2 center = WorldToGui(new Vector3(group.position.x, group.position.y, 0f));
+            Rect marker = new Rect(center.x - 13f, center.y - 13f, 26f, 26f);
+            Color originalColor = GUI.color;
+
+            if (isSelected)
+            {
+                GUI.color = Color.white;
+                GUI.DrawTexture(new Rect(marker.x - 3f, marker.y - 3f, marker.width + 6f, marker.height + 6f), garrisonMarkerTexture);
+            }
+
+            GUI.color = Color.black;
+            GUI.DrawTexture(marker, garrisonMarkerTexture);
+            GUI.color = originalColor;
+
+            if (fieldGarrisonLabelStyle == null)
+            {
+                fieldGarrisonLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 11,
+                    fontStyle = FontStyle.Bold
+                };
+                fieldGarrisonLabelStyle.normal.textColor = Color.white;
+            }
+
+            GUI.Label(marker, group.soldierCount.ToString(), fieldGarrisonLabelStyle);
+        }
+
+        private void EnsureGarrisonMarkerTexture()
+        {
+            if (garrisonMarkerTexture != null)
+                return;
+
+            const int size = 32;
+            garrisonMarkerTexture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            Color32[] pixels = new Color32[size * size];
+            float center = (size - 1) * 0.5f;
+            float radiusSquared = center * center;
+
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float dx = x - center;
+                    float dy = y - center;
+                    pixels[y * size + x] = dx * dx + dy * dy <= radiusSquared
+                        ? new Color32(255, 255, 255, 255)
+                        : new Color32(255, 255, 255, 0);
+                }
+            }
+
+            garrisonMarkerTexture.SetPixels32(pixels);
+            garrisonMarkerTexture.Apply(false);
+        }
+
+        private ArmyRoute FindArmyRouteAt(Vector3 worldPosition)
+        {
+            // Hit-test in screen pixels so the clickable area matches the visible
+            // overlay at every zoom level, rather than becoming huge when zoomed out.
+            const float lineHitDistance = 5f;
+            Vector2 point = WorldToGui(worldPosition);
+            foreach (ArmyRoute route in armyRoutes)
+            {
+                foreach (TroopGroup group in route.groups)
+                {
+                    Vector2 center = WorldToGui(new Vector3(group.position.x, group.position.y, 0f));
+                    bool isGarrison = route.points.Count == 1;
+                    Rect marker = isGarrison
+                        ? new Rect(center.x - 13f, center.y - 13f, 26f, 26f)
+                        : new Rect(center.x - 10f, center.y - 7f, 20f, 14f);
+                    if (isGarrison
+                        ? Vector2.Distance(point, center) <= 13f
+                        : marker.Contains(point))
+                        return route;
+                }
+
+                for (int i = 1; i < route.points.Count; i++)
+                {
+                    Vector2 start = WorldToGui(route.points[i - 1]);
+                    Vector2 end = WorldToGui(route.points[i]);
+                    if (DistanceToSegment(point, start, end) <= lineHitDistance)
+                        return route;
+                }
+            }
+
+            return null;
+        }
+
+        private static float DistanceToSegment(Vector2 point, Vector2 start, Vector2 end)
+        {
+            Vector2 segment = end - start;
+            float lengthSquared = segment.sqrMagnitude;
+            if (lengthSquared < 0.001f)
+                return Vector2.Distance(point, start);
+
+            float t = Mathf.Clamp01(Vector2.Dot(point - start, segment) / lengthSquared);
+            return Vector2.Distance(point, start + segment * t);
+        }
+
+        private Vector2 WorldToGui(Vector3 worldPosition)
+        {
+            Vector3 screenPosition = mainCam.WorldToScreenPoint(worldPosition);
+            return new Vector2(screenPosition.x, Screen.height - screenPosition.y);
+        }
+
+        private void DrawGuiLine(Vector2 from, Vector2 to, Color color, float width)
+        {
+            if (overlayTexture == null)
+            {
+                overlayTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+                overlayTexture.SetPixel(0, 0, Color.white);
+                overlayTexture.Apply(false);
+            }
+
+            Vector2 delta = to - from;
+            float length = delta.magnitude;
+            if (length < 0.01f)
+                return;
+
+            Matrix4x4 originalMatrix = GUI.matrix;
+            Color originalColor = GUI.color;
+            GUI.color = color;
+            float angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg;
+            GUIUtility.RotateAroundPivot(angle, from);
+            GUI.DrawTexture(new Rect(from.x, from.y - width * 0.5f, length, width), overlayTexture);
+            GUI.matrix = originalMatrix;
+            GUI.color = originalColor;
+        }
+
+        private static float GetPathLength(List<Vector3> path)
+        {
+            float length = 0f;
+            for (int i = 1; i < path.Count; i++)
+                length += Vector3.Distance(path[i - 1], path[i]);
+            return length;
+        }
+
+        private static Vector3 GetPointOnPath(List<Vector3> path, float targetDistance)
+        {
+            float traversed = 0f;
+            for (int i = 1; i < path.Count; i++)
+            {
+                float segmentLength = Vector3.Distance(path[i - 1], path[i]);
+                if (traversed + segmentLength >= targetDistance)
+                {
+                    float t = (targetDistance - traversed) / segmentLength;
+                    return Vector3.Lerp(path[i - 1], path[i], t);
+                }
+                traversed += segmentLength;
+            }
+            return path[path.Count - 1];
         }
 
         private void DrawCityContextMenu()
