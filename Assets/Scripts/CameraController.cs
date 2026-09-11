@@ -1,4 +1,5 @@
-﻿using UnityEngine;
+﻿using System;
+using UnityEngine;
 
 namespace AgesOfConflict
 {
@@ -18,9 +19,14 @@ namespace AgesOfConflict
         [Header("Background Styling")]
         public Color backgroundColor = new Color(0.04f, 0.07f, 0.12f, 1f);
 
+        // Event for right-click tap (not drag)
+        public event Action<Vector3> OnRightClickTap;
+
         private Camera cam;
-        private Vector3 dragOrigin;
+        private Vector3 dragOriginWorld;
+        private Vector3 dragStartScreen;
         private bool isDragging = false;
+        private bool hasMovedBeyondThreshold = false;
         private float targetZoom;
         private Vector3 targetPosition;
         private Vector3 panVelocity;
@@ -149,25 +155,57 @@ namespace AgesOfConflict
             return false;
         }
 
+        private bool WasRightButtonUp()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+            {
+                return UnityEngine.InputSystem.Mouse.current.rightButton.wasReleasedThisFrame;
+            }
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetMouseButtonUp(1)) return true;
+#endif
+            return false;
+        }
+
         private void HandleMouseDragPan()
         {
             Vector3 mouseScreen = GetMouseScreenPosition();
 
             if (WasDragButtonDown())
             {
-                dragOrigin = cam.ScreenToWorldPoint(mouseScreen);
-                isDragging = true;
+                dragStartScreen = mouseScreen;
+                dragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
+                isDragging = false;
+                hasMovedBeyondThreshold = false;
             }
 
-            if (isDragging && IsDragButtonPressed())
+            if (IsDragButtonPressed())
             {
-                Vector3 currentPos = cam.ScreenToWorldPoint(mouseScreen);
-                Vector3 diff = dragOrigin - currentPos;
-                targetPosition += diff;
-                dragOrigin = cam.ScreenToWorldPoint(mouseScreen);
+                if (Vector3.Distance(mouseScreen, dragStartScreen) > 8f)
+                {
+                    hasMovedBeyondThreshold = true;
+                    isDragging = true;
+                }
+
+                if (isDragging)
+                {
+                    Vector3 currentWorld = cam.ScreenToWorldPoint(mouseScreen);
+                    Vector3 diff = dragOriginWorld - currentWorld;
+                    targetPosition += diff;
+                    dragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
+                }
             }
-            else
+
+            // Check if right button was released without significant drag (a clean tap!)
+            if (WasRightButtonUp())
             {
+                if (!hasMovedBeyondThreshold)
+                {
+                    Vector3 clickWorld = cam.ScreenToWorldPoint(mouseScreen);
+                    OnRightClickTap?.Invoke(clickWorld);
+                }
                 isDragging = false;
             }
         }

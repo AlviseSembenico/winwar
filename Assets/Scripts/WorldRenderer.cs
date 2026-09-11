@@ -10,12 +10,18 @@ namespace AgesOfConflict
         public Color32 deepOceanColor = new Color32(21, 34, 56, 255);
         public Color32 shallowOceanColor = new Color32(40, 75, 99, 255);
         public Color32 unclaimedLandColor = new Color32(200, 196, 183, 255);
-        public Color32 borderColor = new Color32(10, 10, 10, 255); // Black frontier line
-        public Color32 capitalMarkerColor = new Color32(255, 255, 255, 255);
+        public Color32 borderColor = new Color32(10, 10, 10, 255);
+
+        [Header("City Logo Colors")]
+        public Color32 cityDarkRing = new Color32(20, 20, 20, 255);
+        public Color32 capitalGold = new Color32(255, 215, 0, 255);
+        public Color32 capitalCore = new Color32(255, 255, 255, 255);
+        public Color32 citySilver = new Color32(240, 240, 240, 255);
+        public Color32 cityCore = new Color32(30, 30, 30, 255);
 
         [Header("Settings")]
         public bool showBorders = true;
-        public bool showCapitalMarkers = true;
+        public bool showCities = true;
 
         private Texture2D worldTexture;
         private Color32[] pixelBuffer;
@@ -142,16 +148,91 @@ namespace AgesOfConflict
                 }
             }
 
-            if (showCapitalMarkers)
+            if (showCities)
             {
                 for (int n = 0; n < nations.Count; n++)
                 {
-                    Vector2Int cap = nations[n].capital;
-                    DrawCapitalMarker(cap.x, cap.y, width, height);
+                    for (int c = 0; c < nations[n].cities.Count; c++)
+                    {
+                        DrawCityMarker(nations[n].cities[c], width, height);
+                    }
                 }
             }
 
             ApplyTextureChanges();
+        }
+
+        public void DrawCityMarker(City city, int width, int height)
+        {
+            int cx = city.position.x;
+            int cy = city.position.y;
+
+            if (city.isCapital)
+            {
+                // 9x9 concentric circular crest for capitals
+                int radius = 4;
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    for (int dx = -radius; dx <= radius; dx++)
+                    {
+                        int px = cx + dx;
+                        int py = cy + dy;
+                        if (px >= 0 && px < width && py >= 0 && py < height)
+                        {
+                            float distSq = dx * dx + dy * dy;
+                            if (distSq <= 17.5f) // Circle of radius ~4.1
+                            {
+                                int pIdx = py * width + px;
+                                if (distSq > 9.5f)
+                                {
+                                    pixelBuffer[pIdx] = cityDarkRing; // Outer dark ring
+                                }
+                                else if (distSq > 1.5f)
+                                {
+                                    pixelBuffer[pIdx] = capitalGold; // Gold body
+                                }
+                                else
+                                {
+                                    pixelBuffer[pIdx] = (dx == 0 && dy == 0) ? cityDarkRing : capitalCore; // Core spire
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // 7x7 circular stone emblem for regular cities
+                int radius = 3;
+                for (int dy = -radius; dy <= radius; dy++)
+                {
+                    for (int dx = -radius; dx <= radius; dx++)
+                    {
+                        int px = cx + dx;
+                        int py = cy + dy;
+                        if (px >= 0 && px < width && py >= 0 && py < height)
+                        {
+                            float distSq = dx * dx + dy * dy;
+                            if (distSq <= 9.5f) // Circle of radius ~3.1
+                            {
+                                int pIdx = py * width + px;
+                                if (distSq > 4.5f)
+                                {
+                                    pixelBuffer[pIdx] = cityDarkRing; // Outer dark ring
+                                }
+                                else if (distSq > 0.5f)
+                                {
+                                    pixelBuffer[pIdx] = citySilver; // Silver stone fill
+                                }
+                                else
+                                {
+                                    pixelBuffer[pIdx] = cityCore; // Center dot
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         public static bool IsBorderCell(Cell[] grid, int x, int y, int width, int height, int ownerId)
@@ -184,25 +265,6 @@ namespace AgesOfConflict
             {
                 worldTexture.SetPixels32(pixelBuffer);
                 worldTexture.Apply(false);
-            }
-        }
-
-        private void DrawCapitalMarker(int cx, int cy, int width, int height)
-        {
-            for (int dy = -2; dy <= 2; dy++)
-            {
-                for (int dx = -2; dx <= 2; dx++)
-                {
-                    int px = cx + dx;
-                    int py = cy + dy;
-                    if (px >= 0 && px < width && py >= 0 && py < height)
-                    {
-                        if (dx == 0 || dy == 0)
-                        {
-                            pixelBuffer[py * width + px] = capitalMarkerColor;
-                        }
-                    }
-                }
             }
         }
 

@@ -11,6 +11,10 @@ namespace AgesOfConflict
         public NationSimulator nationSimulator;
         public CameraController cameraController;
 
+        [Header("City Construction")]
+        public float buildCityCost = 100f;
+        public int minCitySpacing = 6;
+
         [Header("Simulation State")]
         public bool isRunning = true;
         [Range(0.01f, 0.5f)] public float tickInterval = 0.04f; // 25 ticks/sec
@@ -24,6 +28,12 @@ namespace AgesOfConflict
         private float tickTimer = 0f;
         private List<Nation> sortedNations = new List<Nation>();
         private Nation hoveredNation = null;
+
+        // Context menu state
+        private bool showContextMenu = false;
+        private Vector2 contextMenuScreenPos;
+        private Vector2Int contextCellPos;
+        private Nation contextNation;
 
         private void Start()
         {
@@ -53,13 +63,72 @@ namespace AgesOfConflict
                 if (cameraController == null) cameraController = mainCam.gameObject.AddComponent<CameraController>();
             }
 
+            if (cameraController != null)
+            {
+                cameraController.OnRightClickTap += HandleRightClickTap;
+            }
+
             Regenerate();
+        }
+
+        private void OnDestroy()
+        {
+            if (cameraController != null)
+            {
+                cameraController.OnRightClickTap -= HandleRightClickTap;
+            }
+        }
+
+        private void HandleRightClickTap(Vector3 worldPos)
+        {
+            if (worldGenerator == null || worldGenerator.Grid == null) return;
+
+            int gx = Mathf.FloorToInt(worldPos.x);
+            int gy = Mathf.FloorToInt(worldPos.y);
+
+            if (gx >= 0 && gx < worldGenerator.width && gy >= 0 && gy < worldGenerator.height)
+            {
+                int idx = gy * worldGenerator.width + gx;
+                Cell cell = worldGenerator.Grid[idx];
+
+                if (cell.HasOwner && cell.nationId >= 0 && cell.nationId < worldGenerator.Nations.Count)
+                {
+                    contextNation = worldGenerator.Nations[cell.nationId];
+                    contextCellPos = new Vector2Int(gx, gy);
+
+                    Vector3 screen = Input.mousePosition;
+#if ENABLE_INPUT_SYSTEM
+                    if (UnityEngine.InputSystem.Mouse.current != null)
+                    {
+                        Vector2 mPos = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
+                        screen = new Vector3(mPos.x, mPos.y, 0f);
+                    }
+#endif
+                    // Convert to GUI coordinate (y is inverted in OnGUI)
+                    contextMenuScreenPos = new Vector2(screen.x, Screen.height - screen.y);
+                    showContextMenu = true;
+                    return;
+                }
+            }
+
+            showContextMenu = false;
         }
 
         private void Update()
         {
             HandleHotkeys();
             UpdateHoveredNation();
+
+            // Close context menu if left-clicked outside
+            if (showContextMenu && (Input.GetMouseButtonDown(0) || (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began)))
+            {
+                Vector2 mouseGui = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+                Rect menuRect = new Rect(contextMenuScreenPos.x, contextMenuScreenPos.y, 220, 165);
+                if (!menuRect.Contains(mouseGui))
+                {
+                    showContextMenu = false;
+                }
+            }
 
             // Simulation loop
             if (isRunning && nationSimulator != null)
@@ -103,31 +172,10 @@ namespace AgesOfConflict
 
         private void HandleHotkeys()
         {
-            if (IsSpacePressed())
-            {
-                isRunning = !isRunning;
-            }
-
-            if (IsSPressed())
-            {
-                if (!isRunning && nationSimulator != null)
-                {
-                    nationSimulator.StepSimulation(tickInterval);
-                }
-            }
-
-            if (IsRPressed())
-            {
-                Regenerate();
-            }
-
-            if (IsFPressed())
-            {
-                if (cameraController != null && worldGenerator != null)
-                {
-                    cameraController.FocusOnMap(worldGenerator.width, worldGenerator.height);
-                }
-            }
+            if (IsSpacePressed()) isRunning = !isRunning;
+            if (IsSPressed() && !isRunning && nationSimulator != null) nationSimulator.StepSimulation(tickInterval);
+            if (IsRPressed()) Regenerate();
+            if (IsFPressed() && cameraController != null && worldGenerator != null) cameraController.FocusOnMap(worldGenerator.width, worldGenerator.height);
 
             if (Is1Pressed()) speedMultiplier = 1;
             if (Is2Pressed()) speedMultiplier = 2;
@@ -228,6 +276,7 @@ namespace AgesOfConflict
         {
             if (worldGenerator == null || worldRenderer == null) return;
 
+            showContextMenu = false;
             float startTime = Time.realtimeSinceStartup;
 
             worldGenerator.GenerateWorld();
@@ -257,9 +306,9 @@ namespace AgesOfConflict
             if (worldGenerator == null) return;
 
             // Left Side: Control Box
-            GUI.Box(new Rect(15, 15, 280, 390), "Ages of Conflict - Simulation");
+            GUI.Box(new Rect(15, 15, 280, 400), "Ages of Conflict - Simulation");
 
-            GUILayout.BeginArea(new Rect(25, 40, 260, 355));
+            GUILayout.BeginArea(new Rect(25, 40, 260, 365));
 
             GUILayout.Label($"<b>Resolution:</b> {worldGenerator.width} x {worldGenerator.height}");
             GUILayout.Label($"<b>Seed:</b> {currentSeed} | <b>Nations:</b> {activeNations}");
@@ -326,7 +375,8 @@ namespace AgesOfConflict
             }
 
             GUILayout.Space(4);
-            GUILayout.Label("• <b>Scroll</b>: Zoom | <b>RMB/WASD</b>: Pan");
+            GUILayout.Label("• <b>Scroll</b>: Zoom | <b>WASD/MMB</b>: Pan");
+            GUILayout.Label("• <b>RMB on Territory</b>: Build City Menu");
 
             // Mouse hover inspector info
             Vector3 mousePos = Input.mousePosition;
@@ -367,8 +417,94 @@ namespace AgesOfConflict
 
             GUILayout.EndArea();
 
-            // Right Side: Economic Hover Inspector OR Leaderboard
+            // Right Side Panel: State Overview or Leaderboard
             DrawRightPanel();
+
+            // Context Menu: Build City Popup
+            if (showContextMenu)
+            {
+                DrawCityContextMenu();
+            }
+        }
+
+        private void DrawCityContextMenu()
+        {
+            if (contextNation == null) return;
+
+            float menuW = 230;
+            float menuH = 175;
+            float posX = Mathf.Clamp(contextMenuScreenPos.x, 10, Screen.width - menuW - 10);
+            float posY = Mathf.Clamp(contextMenuScreenPos.y, 10, Screen.height - menuH - 10);
+
+            GUI.Box(new Rect(posX, posY, menuW, menuH), "🏰 City Construction");
+
+            GUILayout.BeginArea(new Rect(posX + 10, posY + 25, menuW - 20, menuH - 30));
+
+            Color orig = GUI.color;
+            GUI.color = contextNation.color;
+            GUILayout.Label($"<b>{contextNation.name}</b>");
+            GUI.color = orig;
+
+            GUILayout.Label($"Location: ({contextCellPos.x}, {contextCellPos.y})");
+            GUILayout.Label($"Treasury: <color=#FFD700>{contextNation.treasury:F0} gold</color>");
+
+            // Check if too close to an existing city
+            bool tooClose = false;
+            for (int i = 0; i < contextNation.cities.Count; i++)
+            {
+                if (Vector2Int.Distance(contextNation.cities[i].position, contextCellPos) < minCitySpacing)
+                {
+                    tooClose = true;
+                    break;
+                }
+            }
+
+            bool canAfford = contextNation.treasury >= buildCityCost;
+
+            GUILayout.Space(4);
+
+            if (tooClose)
+            {
+                GUILayout.Label("<color=#FF7777>Too close to existing city!</color>");
+            }
+            else if (!canAfford)
+            {
+                GUILayout.Label($"<color=#FF7777>Need {buildCityCost:F0} gold (Short: {buildCityCost - contextNation.treasury:F0})</color>");
+            }
+
+            GUI.enabled = canAfford && !tooClose;
+            if (GUILayout.Button($"🏰 Build City ({buildCityCost:F0}g)", GUILayout.Height(30)))
+            {
+                BuildCityAt(contextNation, contextCellPos);
+                showContextMenu = false;
+            }
+            GUI.enabled = true;
+
+            if (GUILayout.Button("Cancel", GUILayout.Height(22)))
+            {
+                showContextMenu = false;
+            }
+
+            GUILayout.EndArea();
+        }
+
+        private void BuildCityAt(Nation nation, Vector2Int pos)
+        {
+            nation.treasury -= buildCityCost;
+
+            string[] suffixes = { "ton", "burg", "polis", "ford", "grad", "haven", "port", "gate", "keep", "stead" };
+            string cityName = $"{nation.name}{suffixes[nation.cities.Count % suffixes.Length]}";
+
+            City newCity = new City(nation.cities.Count, cityName, nation.id, pos, false, 5f);
+            nation.cities.Add(newCity);
+
+            if (worldRenderer != null)
+            {
+                worldRenderer.DrawCityMarker(newCity, worldGenerator.width, worldGenerator.height);
+                worldRenderer.ApplyTextureChanges();
+            }
+
+            Debug.Log($"Built city '{cityName}' for {nation.name} at ({pos.x}, {pos.y}). Remaining Treasury: {nation.treasury:F1}");
         }
 
         private void DrawRightPanel()
@@ -376,26 +512,24 @@ namespace AgesOfConflict
             int panelWidth = 270;
             int rightMargin = 15;
 
-            // If a nation is hovered, show the detailed Economic & Military Inspector Card!
             if (hoveredNation != null)
             {
-                int cardHeight = 310;
+                int cardHeight = 340;
                 Rect cardRect = new Rect(Screen.width - panelWidth - rightMargin, 15, panelWidth, cardHeight);
-                GUI.Box(cardRect, $"📊 State Overview");
+                GUI.Box(cardRect, "📊 State Overview");
 
                 GUILayout.BeginArea(new Rect(cardRect.x + 10, cardRect.y + 30, panelWidth - 20, cardHeight - 40));
 
-                // Title with color badge
                 Color orig = GUI.color;
                 GUI.color = hoveredNation.color;
                 GUILayout.Label($"<size=15><b>■ {hoveredNation.name}</b></size>");
                 GUI.color = orig;
 
                 GUILayout.Label($"<b>Territory:</b> {hoveredNation.territorySize:N0} pixels");
-                GUILayout.Label($"<b>Capital:</b> ({hoveredNation.capital.x}, {hoveredNation.capital.y})");
+                GUILayout.Label($"<b>Cities:</b> {hoveredNation.cities.Count} (Capital: {hoveredNation.capital.x}, {hoveredNation.capital.y})");
 
                 GUILayout.Space(6);
-                GUILayout.Box("", GUILayout.Height(2), GUILayout.ExpandWidth(true)); // Divider
+                GUILayout.Box("", GUILayout.Height(2), GUILayout.ExpandWidth(true));
                 GUILayout.Label("<b>💰 ECONOMY</b>");
 
                 GUILayout.Label($"• <b>Treasury:</b> <color=#FFD700>{hoveredNation.treasury:F1} gold</color>");
@@ -408,23 +542,21 @@ namespace AgesOfConflict
                 GUILayout.Label($"• <b>Net Cashflow:</b> <color={netColor}><b>{netPrefix}{net:F1} / sec</b></color>");
 
                 GUILayout.Space(6);
-                GUILayout.Box("", GUILayout.Height(2), GUILayout.ExpandWidth(true)); // Divider
+                GUILayout.Box("", GUILayout.Height(2), GUILayout.ExpandWidth(true));
                 GUILayout.Label("<b>⚔️ MILITARY</b>");
 
                 GUILayout.Label($"• <b>Army:</b> {hoveredNation.armyCount} / {hoveredNation.maxArmyTarget} soldiers");
-                string armyStatus = hoveredNation.armyCount >= hoveredNation.maxArmyTarget 
-                    ? "<color=#88FF88>At Cap (Fixed Low)</color>" 
+                string armyStatus = hoveredNation.armyCount >= hoveredNation.maxArmyTarget
+                    ? "<color=#88FF88>At Cap (Fixed Low)</color>"
                     : (hoveredNation.treasury > 10 ? "<color=#FFFF55>Recruiting (Cost: 5g)</color>" : "<color=#FF8888>Low Funds</color>");
                 GUILayout.Label($"• <b>Status:</b> {armyStatus}");
 
                 GUILayout.EndArea();
 
-                // Show mini leaderboard below the hover card
                 DrawMiniLeaderboard(panelWidth, rightMargin, 15 + cardHeight + 10);
             }
             else
             {
-                // Full Leaderboard when not hovering any specific state
                 DrawFullLeaderboard(panelWidth, rightMargin, 15);
             }
         }
@@ -448,7 +580,7 @@ namespace AgesOfConflict
                 var n = sortedNations[i];
                 Color orig = GUI.color;
                 GUI.color = n.color;
-                GUILayout.Label($"#{i + 1} {n.name}: {n.territorySize:N0} px | ⚔️{n.armyCount} | 🪙{n.treasury:F0}");
+                GUILayout.Label($"#{i + 1} {n.name}: {n.territorySize:N0} px | 🏰{n.cities.Count} | 🪙{n.treasury:F0}");
                 GUI.color = orig;
             }
             GUILayout.EndArea();
@@ -473,7 +605,7 @@ namespace AgesOfConflict
                 var n = sortedNations[i];
                 Color orig = GUI.color;
                 GUI.color = n.color;
-                GUILayout.Label($"#{i + 1} {n.name}: {n.territorySize:N0} px | 🪙{n.treasury:F0}");
+                GUILayout.Label($"#{i + 1} {n.name}: {n.territorySize:N0} px | 🏰{n.cities.Count} | 🪙{n.treasury:F0}");
                 GUI.color = orig;
             }
             GUILayout.EndArea();
