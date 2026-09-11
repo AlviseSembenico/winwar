@@ -104,17 +104,19 @@ namespace AgesOfConflict
             if (UnityEngine.InputSystem.Keyboard.current != null)
             {
                 var kb = UnityEngine.InputSystem.Keyboard.current;
-                if (kb.aKey.isPressed || kb.leftArrowKey.isPressed) h -= 1f;
-                if (kb.dKey.isPressed || kb.rightArrowKey.isPressed) h += 1f;
-                if (kb.sKey.isPressed || kb.downArrowKey.isPressed) v -= 1f;
-                if (kb.wKey.isPressed || kb.upArrowKey.isPressed) v += 1f;
+                if (kb.leftArrowKey.isPressed) h -= 1f;
+                if (kb.rightArrowKey.isPressed) h += 1f;
+                if (kb.downArrowKey.isPressed) v -= 1f;
+                if (kb.upArrowKey.isPressed) v += 1f;
             }
 #endif
 #if ENABLE_LEGACY_INPUT_MANAGER
             if (h == 0f && v == 0f)
             {
-                h = Input.GetAxisRaw("Horizontal");
-                v = Input.GetAxisRaw("Vertical");
+                if (Input.GetKey(KeyCode.LeftArrow)) h -= 1f;
+                if (Input.GetKey(KeyCode.RightArrow)) h += 1f;
+                if (Input.GetKey(KeyCode.DownArrow)) v -= 1f;
+                if (Input.GetKey(KeyCode.UpArrow)) v += 1f;
             }
 #endif
 

@@ -485,7 +485,7 @@ namespace AgesOfConflict
             }
 
             GUILayout.Space(4);
-            GUILayout.Label("• <b>Scroll</b>: Zoom | <b>WASD/MMB</b>: Pan");
+            GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan");
             GUILayout.Label("• <b>LMB territory</b>: Select nation | <b>RMB city</b>: Recruit");
             GUILayout.Label("• <b>LMB drag city→city</b>: Move troops");
             GUILayout.Label("• Territory expands automatically; recruitment is manual");
@@ -777,6 +777,15 @@ namespace AgesOfConflict
             int panelWidth = 270;
             int rightMargin = 15;
 
+            if (selectedNation != null)
+            {
+                DrawControlledNationPanel(panelWidth, rightMargin);
+                int leaderboardEntries = Mathf.Min(6, worldGenerator.Nations.Count);
+                int leaderboardHeight = 45 + leaderboardEntries * 22;
+                DrawMiniLeaderboard(panelWidth, rightMargin, Screen.height - leaderboardHeight - 15);
+                return;
+            }
+
             if (hoveredNation != null)
             {
                 int cardHeight = 340;
@@ -824,6 +833,51 @@ namespace AgesOfConflict
             {
                 DrawFullLeaderboard(panelWidth, rightMargin, 15);
             }
+        }
+
+        private void DrawControlledNationPanel(int panelWidth, int rightMargin)
+        {
+            const int maxCitiesToDisplay = 10;
+            int displayedCities = Mathf.Min(maxCitiesToDisplay, selectedNation.cities.Count);
+            int cardHeight = 205 + displayedCities * 24;
+            cardHeight = Mathf.Min(cardHeight, Screen.height - 30);
+            Rect cardRect = new Rect(Screen.width - panelWidth - rightMargin, 15, panelWidth, cardHeight);
+
+            GUI.Box(cardRect, "⚔️ Controlled Nation");
+            GUILayout.BeginArea(new Rect(cardRect.x + 10, cardRect.y + 30, panelWidth - 20, cardHeight - 40));
+
+            Color originalColor = GUI.color;
+            GUI.color = worldRenderer.selectedNationColor;
+            GUILayout.Label($"<size=15><b>■ {selectedNation.name}</b></size>");
+            GUI.color = originalColor;
+
+            GUILayout.Label($"<b>Territory:</b> {selectedNation.territorySize:N0} pixels");
+            GUILayout.Label($"<b>Treasury:</b> <color=#FFD700>{selectedNation.treasury:F1} gold</color>");
+            GUILayout.Label($"<b>Income / Upkeep:</b> +{selectedNation.incomePerSec:F1} / -{selectedNation.upkeepPerSec:F1} per sec");
+
+            float netIncome = selectedNation.netIncomePerSec;
+            string netColor = netIncome >= 0f ? "#55FF55" : "#FF5555";
+            string netPrefix = netIncome >= 0f ? "+" : "";
+            GUILayout.Label($"<b>Net cashflow:</b> <color={netColor}>{netPrefix}{netIncome:F1} / sec</color>");
+            GUILayout.Label($"<b>Military:</b> {selectedNation.armyCount} / {selectedNation.maxArmyTarget} soldiers");
+
+            GUILayout.Space(6);
+            GUILayout.Box("", GUILayout.Height(2), GUILayout.ExpandWidth(true));
+            GUILayout.Label("<b>🏰 CITY GARRISONS</b>");
+
+            for (int i = 0; i < displayedCities; i++)
+            {
+                City city = selectedNation.cities[i];
+                string cityType = city.isCapital ? "Capital" : "City";
+                GUILayout.Label($"{cityType}: {city.name} — <b>{city.armyCount}</b> soldiers");
+            }
+
+            if (selectedNation.cities.Count > maxCitiesToDisplay)
+            {
+                GUILayout.Label($"<i>+ {selectedNation.cities.Count - maxCitiesToDisplay} more cities</i>");
+            }
+
+            GUILayout.EndArea();
         }
 
         private void DrawFullLeaderboard(int listWidth, int rightMargin, int topMargin)
