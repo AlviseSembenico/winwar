@@ -22,12 +22,21 @@ namespace AgesOfConflict
         [Header("Settings")]
         public bool showBorders = true;
         public bool showCities = true;
+        [Tooltip("Display color for the nation currently controlled by the player.")]
+        public Color32 selectedNationColor = new Color32(255, 225, 65, 255);
 
         private Texture2D worldTexture;
         private Color32[] pixelBuffer;
         private MeshRenderer meshRenderer;
         private MeshFilter meshFilter;
         private Material displayMaterial;
+        private Cell[] renderedGrid;
+        private List<Nation> renderedNations;
+        private int renderedWidth;
+        private int renderedHeight;
+        private int selectedNationId = -1;
+
+        public int SelectedNationId => selectedNationId;
 
         private void Awake()
         {
@@ -100,6 +109,11 @@ namespace AgesOfConflict
 
         public void RenderWorld(Cell[] grid, List<Nation> nations, int width, int height)
         {
+            renderedGrid = grid;
+            renderedNations = nations;
+            renderedWidth = width;
+            renderedHeight = height;
+
             if (worldTexture == null || pixelBuffer == null || pixelBuffer.Length != width * height)
             {
                 InitializeTexture(width, height);
@@ -126,7 +140,7 @@ namespace AgesOfConflict
                         }
                         else
                         {
-                            pixelBuffer[i] = nColor;
+                            pixelBuffer[i] = GetDisplayColor(grid[i].nationId, nColor);
                         }
                     }
                     else
@@ -160,6 +174,23 @@ namespace AgesOfConflict
             }
 
             ApplyTextureChanges();
+        }
+
+        public void SetSelectedNation(int nationId)
+        {
+            if (selectedNationId == nationId)
+                return;
+
+            selectedNationId = nationId;
+            if (renderedGrid != null && renderedNations != null)
+            {
+                RenderWorld(renderedGrid, renderedNations, renderedWidth, renderedHeight);
+            }
+        }
+
+        public Color32 GetDisplayColor(int nationId, Color32 nationColor)
+        {
+            return nationId == selectedNationId ? selectedNationColor : nationColor;
         }
 
         public void DrawCityMarker(City city, int width, int height)

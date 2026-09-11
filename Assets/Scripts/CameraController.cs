@@ -21,12 +21,24 @@ namespace AgesOfConflict
 
         // Event for right-click tap (not drag)
         public event Action<Vector3> OnRightClickTap;
+        public event Action<Vector3, Vector3> OnRightDragCompleted;
+        public event Action<Vector3> OnLeftClickTap;
+        public event Action<Vector3, Vector3> OnLeftDragCompleted;
+
+        // SimulationManager uses this to reserve city-to-city drags for troop orders.
+        public Func<Vector3, bool> ShouldReserveRightDrag;
+        public Func<Vector3, bool> ShouldReserveLeftDrag;
 
         private Camera cam;
         private Vector3 dragOriginWorld;
         private Vector3 dragStartScreen;
         private bool isDragging = false;
         private bool hasMovedBeyondThreshold = false;
+        private bool isReservedRightDrag = false;
+        private Vector3 leftDragOriginWorld;
+        private Vector3 leftDragStartScreen;
+        private bool isReservedLeftDrag;
+        private bool leftDragMovedBeyondThreshold;
         private float targetZoom;
         private Vector3 targetPosition;
         private Vector3 panVelocity;
@@ -74,6 +86,7 @@ namespace AgesOfConflict
         {
             HandleKeyboardPan();
             HandleMouseDragPan();
+            HandleLeftCityDrag();
             HandleScrollZoom();
 
             transform.position = Vector3.SmoothDamp(transform.position, targetPosition, ref panVelocity, smoothTime);
@@ -169,6 +182,45 @@ namespace AgesOfConflict
             return false;
         }
 
+        private bool IsLeftButtonPressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+                return UnityEngine.InputSystem.Mouse.current.leftButton.isPressed;
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetMouseButton(0);
+#else
+            return false;
+#endif
+        }
+
+        private bool WasLeftButtonDown()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+                return UnityEngine.InputSystem.Mouse.current.leftButton.wasPressedThisFrame;
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetMouseButtonDown(0);
+#else
+            return false;
+#endif
+        }
+
+        private bool WasLeftButtonUp()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+                return UnityEngine.InputSystem.Mouse.current.leftButton.wasReleasedThisFrame;
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetMouseButtonUp(0);
+#else
+            return false;
+#endif
+        }
+
         private void HandleMouseDragPan()
         {
             Vector3 mouseScreen = GetMouseScreenPosition();
@@ -179,6 +231,7 @@ namespace AgesOfConflict
                 dragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
                 isDragging = false;
                 hasMovedBeyondThreshold = false;
+                isReservedRightDrag = ShouldReserveRightDrag != null && ShouldReserveRightDrag(dragOriginWorld);
             }
 
             if (IsDragButtonPressed())
@@ -189,7 +242,7 @@ namespace AgesOfConflict
                     isDragging = true;
                 }
 
-                if (isDragging)
+                if (isDragging && !isReservedRightDrag)
                 {
                     Vector3 currentWorld = cam.ScreenToWorldPoint(mouseScreen);
                     Vector3 diff = dragOriginWorld - currentWorld;
@@ -201,12 +254,49 @@ namespace AgesOfConflict
             // Check if right button was released without significant drag (a clean tap!)
             if (WasRightButtonUp())
             {
-                if (!hasMovedBeyondThreshold)
+                Vector3 clickWorld = cam.ScreenToWorldPoint(mouseScreen);
+                if (isReservedRightDrag && hasMovedBeyondThreshold)
                 {
-                    Vector3 clickWorld = cam.ScreenToWorldPoint(mouseScreen);
+                    OnRightDragCompleted?.Invoke(dragOriginWorld, clickWorld);
+                }
+                else if (!hasMovedBeyondThreshold)
+                {
                     OnRightClickTap?.Invoke(clickWorld);
                 }
                 isDragging = false;
+                isReservedRightDrag = false;
+            }
+        }
+
+        private void HandleLeftCityDrag()
+        {
+            Vector3 mouseScreen = GetMouseScreenPosition();
+
+            if (WasLeftButtonDown())
+            {
+                leftDragStartScreen = mouseScreen;
+                leftDragOriginWorld = cam.ScreenToWorldPoint(mouseScreen);
+                isReservedLeftDrag = ShouldReserveLeftDrag != null && ShouldReserveLeftDrag(leftDragOriginWorld);
+                leftDragMovedBeyondThreshold = false;
+            }
+
+            if (isReservedLeftDrag && IsLeftButtonPressed()
+                && Vector3.Distance(mouseScreen, leftDragStartScreen) > 8f)
+            {
+                leftDragMovedBeyondThreshold = true;
+            }
+
+            if (WasLeftButtonUp())
+            {
+                if (isReservedLeftDrag && leftDragMovedBeyondThreshold)
+                {
+                    OnLeftDragCompleted?.Invoke(leftDragOriginWorld, cam.ScreenToWorldPoint(mouseScreen));
+                }
+                else if (!leftDragMovedBeyondThreshold)
+                {
+                    OnLeftClickTap?.Invoke(cam.ScreenToWorldPoint(mouseScreen));
+                }
+                isReservedLeftDrag = false;
             }
         }
 

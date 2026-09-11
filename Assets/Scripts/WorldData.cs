@@ -31,6 +31,7 @@ namespace AgesOfConflict
         public Vector2Int position;
         public bool isCapital;
         public float incomeBonus;
+        public int armyCount;
 
         public City(int id, string name, int nationId, Vector2Int position, bool isCapital, float incomeBonus = 5f)
         {
@@ -40,6 +41,7 @@ namespace AgesOfConflict
             this.position = position;
             this.isCapital = isCapital;
             this.incomeBonus = incomeBonus;
+            this.armyCount = 0;
         }
     }
 
@@ -53,14 +55,14 @@ namespace AgesOfConflict
         public int territorySize;
 
         [Header("Economy")]
-        public float treasury = 100f;
+        public float treasury = 1000f;
         public float incomePerSec = 0f;
         public float upkeepPerSec = 0f;
         public float netIncomePerSec => incomePerSec - upkeepPerSec;
 
-        [Header("Military (Fixed Low Cap)")]
+        [Header("Military (Player Managed)")]
         public int armyCount = 20;
-        public int maxArmyTarget = 50;
+        public int maxArmyTarget = 500;
 
         [Header("Cities")]
         public List<City> cities = new List<City>();
@@ -75,14 +77,15 @@ namespace AgesOfConflict
             this.color = color;
             this.capital = capital;
             this.territorySize = 0;
-            this.treasury = 100f;
+            this.treasury = 1000f;
             this.armyCount = 20;
-            this.maxArmyTarget = 50;
+            this.maxArmyTarget = 500;
             this.frontier = new List<int>();
             this.cities = new List<City>();
 
             // Add capital city
             City capitalCity = new City(0, $"{name} City", id, capital, true, 10f);
+            capitalCity.armyCount = armyCount;
             cities.Add(capitalCity);
         }
     }

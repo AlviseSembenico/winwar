@@ -28,12 +28,23 @@ namespace AgesOfConflict
         private float tickTimer = 0f;
         private List<Nation> sortedNations = new List<Nation>();
         private Nation hoveredNation = null;
+        private Nation selectedNation = null;
 
         // Context menu state
         private bool showContextMenu = false;
         private Vector2 contextMenuScreenPos;
         private Vector2Int contextCellPos;
         private Nation contextNation;
+        private City contextCity;
+
+        // City-to-city troop transfer state
+        private bool showTransferDialog = false;
+        private City transferOrigin;
+        private City transferDestination;
+        private string transferPercentage = "50";
+        private string recruitAmount = "1";
+        private string commandMessage;
+        private GUIStyle garrisonLabelStyle;
 
         private void Start()
         {
@@ -66,6 +77,9 @@ namespace AgesOfConflict
             if (cameraController != null)
             {
                 cameraController.OnRightClickTap += HandleRightClickTap;
+                cameraController.OnLeftClickTap += HandleNationSelection;
+                cameraController.OnLeftDragCompleted += HandleCityDrag;
+                cameraController.ShouldReserveLeftDrag += IsCityAt;
             }
 
             Regenerate();
@@ -76,42 +90,132 @@ namespace AgesOfConflict
             if (cameraController != null)
             {
                 cameraController.OnRightClickTap -= HandleRightClickTap;
+                cameraController.OnLeftClickTap -= HandleNationSelection;
+                cameraController.OnLeftDragCompleted -= HandleCityDrag;
+                cameraController.ShouldReserveLeftDrag -= IsCityAt;
             }
         }
 
         private void HandleRightClickTap(Vector3 worldPos)
         {
-            if (worldGenerator == null || worldGenerator.Grid == null) return;
-
-            int gx = Mathf.FloorToInt(worldPos.x);
-            int gy = Mathf.FloorToInt(worldPos.y);
-
-            if (gx >= 0 && gx < worldGenerator.width && gy >= 0 && gy < worldGenerator.height)
+            City city = FindCityAt(worldPos);
+            if (city != null)
             {
-                int idx = gy * worldGenerator.width + gx;
-                Cell cell = worldGenerator.Grid[idx];
+                contextNation = worldGenerator.Nations[city.nationId];
+                contextCity = city;
+            }
+            else
+            {
+                if (worldGenerator == null || worldGenerator.Grid == null) return;
 
-                if (cell.HasOwner && cell.nationId >= 0 && cell.nationId < worldGenerator.Nations.Count)
+                int gx = Mathf.FloorToInt(worldPos.x);
+                int gy = Mathf.FloorToInt(worldPos.y);
+                if (gx < 0 || gx >= worldGenerator.width || gy < 0 || gy >= worldGenerator.height)
                 {
-                    contextNation = worldGenerator.Nations[cell.nationId];
-                    contextCellPos = new Vector2Int(gx, gy);
-
-                    Vector3 screen = Input.mousePosition;
-#if ENABLE_INPUT_SYSTEM
-                    if (UnityEngine.InputSystem.Mouse.current != null)
-                    {
-                        Vector2 mPos = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
-                        screen = new Vector3(mPos.x, mPos.y, 0f);
-                    }
-#endif
-                    // Convert to GUI coordinate (y is inverted in OnGUI)
-                    contextMenuScreenPos = new Vector2(screen.x, Screen.height - screen.y);
-                    showContextMenu = true;
+                    showContextMenu = false;
                     return;
                 }
+
+                Cell cell = worldGenerator.Grid[gy * worldGenerator.width + gx];
+                if (!cell.HasOwner || cell.nationId < 0 || cell.nationId >= worldGenerator.Nations.Count)
+                {
+                    showContextMenu = false;
+                    return;
+                }
+
+                contextNation = worldGenerator.Nations[cell.nationId];
+                contextCity = null;
             }
 
+            contextCellPos = new Vector2Int(Mathf.FloorToInt(worldPos.x), Mathf.FloorToInt(worldPos.y));
+            if (selectedNation == null || contextNation.id != selectedNation.id)
+            {
+                showContextMenu = false;
+                commandMessage = "Select this nation with a left-click before issuing commands.";
+                return;
+            }
+            commandMessage = null;
+
+            Vector3 screen = Input.mousePosition;
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+            {
+                Vector2 mPos = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
+                screen = new Vector3(mPos.x, mPos.y, 0f);
+            }
+#endif
+            // Convert to GUI coordinate (y is inverted in OnGUI)
+            contextMenuScreenPos = new Vector2(screen.x, Screen.height - screen.y);
+            showContextMenu = true;
+        }
+
+        private void HandleNationSelection(Vector3 worldPos)
+        {
+            if (worldGenerator == null || worldGenerator.Grid == null)
+                return;
+
+            int x = Mathf.FloorToInt(worldPos.x);
+            int y = Mathf.FloorToInt(worldPos.y);
+            if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                return;
+
+            Cell cell = worldGenerator.Grid[y * worldGenerator.width + x];
+            if (!cell.HasOwner || cell.nationId < 0 || cell.nationId >= worldGenerator.Nations.Count)
+                return;
+
+            selectedNation = worldGenerator.Nations[cell.nationId];
+            worldRenderer.SetSelectedNation(selectedNation.id);
+            commandMessage = $"Now controlling {selectedNation.name}.";
+        }
+
+        private bool IsCityAt(Vector3 worldPos) => FindCityAt(worldPos) != null;
+
+        private City FindCityAt(Vector3 worldPos)
+        {
+            if (worldGenerator == null || worldGenerator.Nations == null)
+                return null;
+
+            Vector2 point = new Vector2(worldPos.x, worldPos.y);
+            for (int n = 0; n < worldGenerator.Nations.Count; n++)
+            {
+                foreach (City city in worldGenerator.Nations[n].cities)
+                {
+                    float hitRadius = city.isCapital ? 4.5f : 3.5f;
+                    if (Vector2.Distance(point, city.position) <= hitRadius)
+                        return city;
+                }
+            }
+            return null;
+        }
+
+        private void HandleCityDrag(Vector3 originWorld, Vector3 destinationWorld)
+        {
+            City origin = FindCityAt(originWorld);
+            City destination = FindCityAt(destinationWorld);
             showContextMenu = false;
+
+            if (origin == null || destination == null || origin == destination)
+            {
+                commandMessage = "Drag from one city to a different city.";
+                return;
+            }
+
+            if (origin.nationId != destination.nationId)
+            {
+                commandMessage = "Troops can currently move only between cities of the same nation.";
+                return;
+            }
+
+            if (selectedNation == null || origin.nationId != selectedNation.id)
+            {
+                commandMessage = "Select the nation before moving its troops.";
+                return;
+            }
+
+            transferOrigin = origin;
+            transferDestination = destination;
+            transferPercentage = "50";
+            showTransferDialog = true;
         }
 
         private void Update()
@@ -123,7 +227,7 @@ namespace AgesOfConflict
             if (showContextMenu && (Input.GetMouseButtonDown(0) || (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began)))
             {
                 Vector2 mouseGui = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-                Rect menuRect = new Rect(contextMenuScreenPos.x, contextMenuScreenPos.y, 220, 165);
+                Rect menuRect = new Rect(contextMenuScreenPos.x, contextMenuScreenPos.y, 230, 310);
                 if (!menuRect.Contains(mouseGui))
                 {
                     showContextMenu = false;
@@ -282,6 +386,8 @@ namespace AgesOfConflict
             worldGenerator.GenerateWorld();
             currentSeed = worldGenerator.seed;
             activeNations = worldGenerator.Nations.Count;
+            selectedNation = null;
+            worldRenderer.SetSelectedNation(-1);
 
             worldRenderer.RenderWorld(worldGenerator.Grid, worldGenerator.Nations, worldGenerator.width, worldGenerator.height);
 
@@ -305,6 +411,8 @@ namespace AgesOfConflict
         {
             if (worldGenerator == null) return;
 
+            DrawCityGarrisonLabels();
+
             // Left Side: Control Box
             GUI.Box(new Rect(15, 15, 280, 400), "Ages of Conflict - Simulation");
 
@@ -312,6 +420,8 @@ namespace AgesOfConflict
 
             GUILayout.Label($"<b>Resolution:</b> {worldGenerator.width} x {worldGenerator.height}");
             GUILayout.Label($"<b>Seed:</b> {currentSeed} | <b>Nations:</b> {activeNations}");
+            string selectedName = selectedNation == null ? "None (left-click a nation)" : selectedNation.name;
+            GUILayout.Label($"<b>Controlling:</b> {selectedName}");
 
             // Colonization Status
             if (nationSimulator != null)
@@ -376,7 +486,9 @@ namespace AgesOfConflict
 
             GUILayout.Space(4);
             GUILayout.Label("• <b>Scroll</b>: Zoom | <b>WASD/MMB</b>: Pan");
-            GUILayout.Label("• <b>RMB on Territory</b>: Build City Menu");
+            GUILayout.Label("• <b>LMB territory</b>: Select nation | <b>RMB city</b>: Recruit");
+            GUILayout.Label("• <b>LMB drag city→city</b>: Move troops");
+            GUILayout.Label("• Territory expands automatically; recruitment is manual");
 
             // Mouse hover inspector info
             Vector3 mousePos = Input.mousePosition;
@@ -425,6 +537,55 @@ namespace AgesOfConflict
             {
                 DrawCityContextMenu();
             }
+
+            if (showTransferDialog)
+            {
+                DrawTroopTransferDialog();
+            }
+
+            if (!string.IsNullOrEmpty(commandMessage))
+            {
+                GUI.Box(new Rect(Screen.width * 0.5f - 190, 15, 380, 30), commandMessage);
+            }
+        }
+
+        private void DrawCityGarrisonLabels()
+        {
+            if (mainCam == null || worldGenerator.Nations == null)
+                return;
+
+            if (garrisonLabelStyle == null)
+            {
+                garrisonLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 13,
+                    fontStyle = FontStyle.Bold
+                };
+                garrisonLabelStyle.normal.textColor = Color.white;
+            }
+
+            for (int n = 0; n < worldGenerator.Nations.Count; n++)
+            {
+                foreach (City city in worldGenerator.Nations[n].cities)
+                {
+                    if (city.armyCount <= 0)
+                        continue;
+
+                    float heightAboveCity = city.isCapital ? 6f : 5f;
+                    Vector3 screenPosition = mainCam.WorldToScreenPoint(
+                        new Vector3(city.position.x + 0.5f, city.position.y + heightAboveCity, 0f));
+                    if (screenPosition.z < 0f)
+                        continue;
+
+                    Rect labelRect = new Rect(screenPosition.x - 28f, Screen.height - screenPosition.y - 10f, 56f, 20f);
+                    Color previousColor = GUI.color;
+                    GUI.color = new Color(0f, 0f, 0f, 0.7f);
+                    GUI.DrawTexture(labelRect, Texture2D.whiteTexture);
+                    GUI.color = previousColor;
+                    GUI.Label(labelRect, city.armyCount.ToString(), garrisonLabelStyle);
+                }
+            }
         }
 
         private void DrawCityContextMenu()
@@ -432,11 +593,11 @@ namespace AgesOfConflict
             if (contextNation == null) return;
 
             float menuW = 230;
-            float menuH = 175;
+            float menuH = 310;
             float posX = Mathf.Clamp(contextMenuScreenPos.x, 10, Screen.width - menuW - 10);
             float posY = Mathf.Clamp(contextMenuScreenPos.y, 10, Screen.height - menuH - 10);
 
-            GUI.Box(new Rect(posX, posY, menuW, menuH), "🏰 City Construction");
+            GUI.Box(new Rect(posX, posY, menuW, menuH), contextCity != null ? "⚔️ Nation Commands" : "🏰 City Construction");
 
             GUILayout.BeginArea(new Rect(posX + 10, posY + 25, menuW - 20, menuH - 30));
 
@@ -447,6 +608,53 @@ namespace AgesOfConflict
 
             GUILayout.Label($"Location: ({contextCellPos.x}, {contextCellPos.y})");
             GUILayout.Label($"Treasury: <color=#FFD700>{contextNation.treasury:F0} gold</color>");
+
+            if (contextCity != null)
+            {
+                GUILayout.Label($"City: <b>{contextCity.name}</b>");
+                GUILayout.Label($"Garrison: <b>{contextCity.armyCount}</b> | Nation army: {contextNation.armyCount} / {contextNation.maxArmyTarget}");
+                GUILayout.Space(3);
+                GUILayout.Label("<b>Troop Management</b>");
+                GUILayout.BeginHorizontal();
+
+                GUI.SetNextControlName("RecruitAmount");
+                recruitAmount = GUILayout.TextField(recruitAmount, 4, GUILayout.Width(42), GUILayout.Height(25));
+                bool hasValidRecruitAmount = int.TryParse(recruitAmount, out int amount) && amount > 0;
+                bool canRecruit = hasValidRecruitAmount && nationSimulator != null && nationSimulator.CanRecruit(contextCity, amount);
+                Event currentEvent = Event.current;
+                bool submitRecruitWithEnter = GUI.GetNameOfFocusedControl() == "RecruitAmount"
+                    && currentEvent.type == EventType.KeyDown
+                    && (currentEvent.keyCode == KeyCode.Return || currentEvent.keyCode == KeyCode.KeypadEnter);
+
+                GUI.enabled = canRecruit;
+                if (GUILayout.Button("Recruit", GUILayout.Height(25)) || (submitRecruitWithEnter && canRecruit))
+                {
+                    nationSimulator.TryRecruit(contextCity, amount);
+                    if (submitRecruitWithEnter)
+                    {
+                        currentEvent.Use();
+                        GUI.FocusControl(null);
+                    }
+                }
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
+                GUILayout.Label($"Recruit any amount at {nationSimulator.recruitCost:F0} gold per soldier.");
+
+                GUILayout.BeginHorizontal();
+                GUI.enabled = contextCity.armyCount > 0;
+                if (GUILayout.Button("Disband 1", GUILayout.Height(22)))
+                {
+                    nationSimulator.Disband(contextCity, 1);
+                }
+
+                GUI.enabled = contextCity.armyCount >= 5;
+                if (GUILayout.Button("Disband 5", GUILayout.Height(22)))
+                {
+                    nationSimulator.Disband(contextCity, 5);
+                }
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
+            }
 
             // Check if too close to an existing city
             bool tooClose = false;
@@ -461,7 +669,8 @@ namespace AgesOfConflict
 
             bool canAfford = contextNation.treasury >= buildCityCost;
 
-            GUILayout.Space(4);
+            GUILayout.Space(5);
+            GUILayout.Label("<b>City Construction</b>");
 
             if (tooClose)
             {
@@ -485,6 +694,62 @@ namespace AgesOfConflict
                 showContextMenu = false;
             }
 
+            GUILayout.EndArea();
+        }
+
+        private void DrawTroopTransferDialog()
+        {
+            if (transferOrigin == null || transferDestination == null)
+            {
+                showTransferDialog = false;
+                return;
+            }
+
+            const float width = 310f;
+            const float height = 190f;
+            float x = (Screen.width - width) * 0.5f;
+            float y = (Screen.height - height) * 0.5f;
+
+            GUI.Box(new Rect(x, y, width, height), "⚔️ Move Troops");
+            GUILayout.BeginArea(new Rect(x + 15, y + 28, width - 30, height - 38));
+            GUILayout.Label($"From: <b>{transferOrigin.name}</b> ({transferOrigin.armyCount} soldiers)");
+            GUILayout.Label($"To: <b>{transferDestination.name}</b> ({transferDestination.armyCount} soldiers)");
+            GUILayout.Space(8);
+            GUILayout.Label("Percentage of the origin garrison to move:");
+            GUI.SetNextControlName("TransferPercentage");
+            transferPercentage = GUILayout.TextField(transferPercentage, 3, GUILayout.Width(55));
+
+            bool validPercentage = float.TryParse(transferPercentage, out float percentage)
+                && percentage > 0f
+                && percentage <= 100f
+                && transferOrigin.armyCount > 0;
+            Event currentEvent = Event.current;
+            bool submitMoveWithEnter = GUI.GetNameOfFocusedControl() == "TransferPercentage"
+                && currentEvent.type == EventType.KeyDown
+                && (currentEvent.keyCode == KeyCode.Return || currentEvent.keyCode == KeyCode.KeypadEnter);
+
+            GUILayout.BeginHorizontal();
+            GUI.enabled = validPercentage;
+            if (GUILayout.Button("Move Troops", GUILayout.Height(28)) || (submitMoveWithEnter && validPercentage))
+            {
+                if (nationSimulator.MoveTroops(transferOrigin, transferDestination, percentage))
+                {
+                    commandMessage = $"Moved {percentage:F0}% from {transferOrigin.name} to {transferDestination.name}.";
+                    showTransferDialog = false;
+                    if (submitMoveWithEnter)
+                    {
+                        currentEvent.Use();
+                        GUI.FocusControl(null);
+                    }
+                }
+            }
+            GUI.enabled = true;
+
+            if (GUILayout.Button("Cancel", GUILayout.Height(28), GUILayout.Width(80)))
+            {
+                showTransferDialog = false;
+            }
+            GUILayout.EndHorizontal();
             GUILayout.EndArea();
         }
 
@@ -547,8 +812,8 @@ namespace AgesOfConflict
 
                 GUILayout.Label($"• <b>Army:</b> {hoveredNation.armyCount} / {hoveredNation.maxArmyTarget} soldiers");
                 string armyStatus = hoveredNation.armyCount >= hoveredNation.maxArmyTarget
-                    ? "<color=#88FF88>At Cap (Fixed Low)</color>"
-                    : (hoveredNation.treasury > 10 ? "<color=#FFFF55>Recruiting (Cost: 5g)</color>" : "<color=#FF8888>Low Funds</color>");
+                    ? "<color=#88FF88>At army cap</color>"
+                    : "<color=#FFFF55>Manual recruitment</color>";
                 GUILayout.Label($"• <b>Status:</b> {armyStatus}");
 
                 GUILayout.EndArea();

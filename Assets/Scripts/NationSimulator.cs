@@ -17,8 +17,8 @@ namespace AgesOfConflict
         public float upkeepPerSoldier = 0.15f;
         [Tooltip("Gold cost to recruit 1 new soldier")]
         public float recruitCost = 5f;
-        [Tooltip("Fixed low target/limit for army size")]
-        public int fixedArmyTarget = 50;
+        [Tooltip("Maximum number of soldiers a nation may maintain. Players recruit up to this limit manually.")]
+        public int fixedArmyTarget = 500;
 
         public int TotalLandCells { get; private set; }
         public int ClaimedLandCells { get; private set; }
@@ -71,9 +71,7 @@ namespace AgesOfConflict
         private void BuildInitialFrontiers()
         {
             for (int n = 0; n < nations.Count; n++)
-            {
                 nations[n].frontier.Clear();
-            }
 
             for (int y = 0; y < height; y++)
             {
@@ -81,16 +79,12 @@ namespace AgesOfConflict
                 for (int x = 0; x < width; x++)
                 {
                     int idx = rowOffset + x;
-                    if (grid[idx].HasOwner && grid[idx].IsLand)
+                    if (grid[idx].HasOwner && grid[idx].IsLand
+                        && HasUnclaimedLandNeighbor(x, y))
                     {
                         int ownerId = grid[idx].nationId;
                         if (ownerId >= 0 && ownerId < nations.Count)
-                        {
-                            if (HasUnclaimedLandNeighbor(x, y))
-                            {
-                                nations[ownerId].frontier.Add(idx);
-                            }
-                        }
+                            nations[ownerId].frontier.Add(idx);
                     }
                 }
             }
@@ -102,19 +96,20 @@ namespace AgesOfConflict
             {
                 int nx = x + dx[i];
                 int ny = y + dy[i];
-
                 if (nx >= 0 && nx < width && ny >= 0 && ny < height)
                 {
-                    int nIdx = ny * width + nx;
-                    if (grid[nIdx].IsLand && !grid[nIdx].HasOwner)
-                    {
+                    Cell neighbor = grid[ny * width + nx];
+                    if (neighbor.IsLand && !neighbor.HasOwner)
                         return true;
-                    }
                 }
             }
             return false;
         }
 
+        /// <summary>
+        /// Advances the passive economy and the existing territorial-colonization simulation.
+        /// Army recruitment remains a player action.
+        /// </summary>
         public bool StepSimulation(float deltaTime)
         {
             if (nations == null || nations.Count == 0)
@@ -122,125 +117,167 @@ namespace AgesOfConflict
                 return false;
             }
 
-            // 1. Update Economy & Military
             UpdateEconomyAndMilitary(deltaTime);
-
-            // 2. Territorial Expansion
             if (IsFullyColonized)
-            {
                 return false;
-            }
 
             bool anyExpanded = false;
-
-            // Randomize nation order each tick
             List<int> nationIndices = new List<int>(nations.Count);
-            for (int i = 0; i < nations.Count; i++) nationIndices.Add(i);
+            for (int i = 0; i < nations.Count; i++)
+                nationIndices.Add(i);
+
             for (int i = nationIndices.Count - 1; i > 0; i--)
             {
                 int swap = UnityEngine.Random.Range(0, i + 1);
-                int temp = nationIndices[i];
+                int temporary = nationIndices[i];
                 nationIndices[i] = nationIndices[swap];
-                nationIndices[swap] = temp;
+                nationIndices[swap] = temporary;
             }
 
             for (int i = 0; i < nationIndices.Count; i++)
             {
                 Nation nation = nations[nationIndices[i]];
-                if (nation.frontier.Count == 0) continue;
-
                 int attempts = Mathf.Min(expansionRate, nation.frontier.Count);
-
-                for (int a = 0; a < attempts; a++)
+                for (int attempt = 0; attempt < attempts && nation.frontier.Count > 0; attempt++)
                 {
-                    if (nation.frontier.Count == 0) break;
-
-                    int pickIdx = UnityEngine.Random.Range(0, nation.frontier.Count);
-                    int cellIdx = nation.frontier[pickIdx];
-                    int cx = cellIdx % width;
-                    int cy = cellIdx / width;
-
+                    int frontierIndex = UnityEngine.Random.Range(0, nation.frontier.Count);
+                    int cellIndex = nation.frontier[frontierIndex];
+                    int cellX = cellIndex % width;
+                    int cellY = cellIndex / width;
                     List<int> candidates = new List<int>(4);
-                    for (int d = 0; d < 4; d++)
-                    {
-                        int nx = cx + dx[d];
-                        int ny = cy + dy[d];
 
+                    for (int direction = 0; direction < 4; direction++)
+                    {
+                        int nx = cellX + dx[direction];
+                        int ny = cellY + dy[direction];
                         if (nx >= 0 && nx < width && ny >= 0 && ny < height)
                         {
-                            int nIdx = ny * width + nx;
-                            if (grid[nIdx].IsLand && !grid[nIdx].HasOwner)
-                            {
-                                candidates.Add(nIdx);
-                            }
+                            int neighborIndex = ny * width + nx;
+                            if (grid[neighborIndex].IsLand && !grid[neighborIndex].HasOwner)
+                                candidates.Add(neighborIndex);
                         }
                     }
 
-                    if (candidates.Count > 0)
+                    if (candidates.Count == 0)
                     {
-                        int chosenNIdx = candidates[UnityEngine.Random.Range(0, candidates.Count)];
-                        grid[chosenNIdx].nationId = (short)nation.id;
-                        nation.territorySize++;
-                        ClaimedLandCells++;
-
-                        nation.frontier.Add(chosenNIdx);
-
-                        if (worldRenderer != null)
-                        {
-                            int chosenX = chosenNIdx % width;
-                            int chosenY = chosenNIdx / width;
-
-                            if (worldRenderer.showBorders && WorldRenderer.IsBorderCell(grid, chosenX, chosenY, width, height, nation.id))
-                            {
-                                worldRenderer.SetPixelColor(chosenNIdx, worldRenderer.borderColor);
-                            }
-                            else
-                            {
-                                worldRenderer.SetPixelColor(chosenNIdx, nation.color);
-                            }
-
-                            for (int d = 0; d < 4; d++)
-                            {
-                                int adjX = chosenX + dx[d];
-                                int adjY = chosenY + dy[d];
-                                if (adjX >= 0 && adjX < width && adjY >= 0 && adjY < height)
-                                {
-                                    int adjIdx = adjY * width + adjX;
-                                    if (grid[adjIdx].nationId == nation.id)
-                                    {
-                                        if (!WorldRenderer.IsBorderCell(grid, adjX, adjY, width, height, nation.id))
-                                        {
-                                            worldRenderer.SetPixelColor(adjIdx, nation.color);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        anyExpanded = true;
-
-                        if (candidates.Count <= 1)
-                        {
-                            int lastIdx = nation.frontier.Count - 1;
-                            nation.frontier[pickIdx] = nation.frontier[lastIdx];
-                            nation.frontier.RemoveAt(lastIdx);
-                        }
+                        RemoveFrontierCell(nation, frontierIndex);
+                        continue;
                     }
-                    else
-                    {
-                        int lastIdx = nation.frontier.Count - 1;
-                        nation.frontier[pickIdx] = nation.frontier[lastIdx];
-                        nation.frontier.RemoveAt(lastIdx);
-                    }
+
+                    int claimedIndex = candidates[UnityEngine.Random.Range(0, candidates.Count)];
+                    grid[claimedIndex].nationId = (short)nation.id;
+                    nation.territorySize++;
+                    ClaimedLandCells++;
+                    nation.frontier.Add(claimedIndex);
+                    UpdateClaimedCellRendering(nation, claimedIndex);
+                    anyExpanded = true;
+
+                    if (candidates.Count == 1)
+                        RemoveFrontierCell(nation, frontierIndex);
                 }
             }
 
             if (anyExpanded && worldRenderer != null)
-            {
                 worldRenderer.ApplyTextureChanges();
-            }
 
             return anyExpanded;
+        }
+
+        private void RemoveFrontierCell(Nation nation, int index)
+        {
+            int last = nation.frontier.Count - 1;
+            nation.frontier[index] = nation.frontier[last];
+            nation.frontier.RemoveAt(last);
+        }
+
+        private void UpdateClaimedCellRendering(Nation nation, int cellIndex)
+        {
+            if (worldRenderer == null)
+                return;
+
+            int x = cellIndex % width;
+            int y = cellIndex / width;
+            worldRenderer.SetPixelColor(
+                cellIndex,
+                worldRenderer.showBorders && WorldRenderer.IsBorderCell(grid, x, y, width, height, nation.id)
+                    ? worldRenderer.borderColor
+                    : worldRenderer.GetDisplayColor(nation.id, nation.color));
+
+            for (int direction = 0; direction < 4; direction++)
+            {
+                int nx = x + dx[direction];
+                int ny = y + dy[direction];
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                {
+                    int neighborIndex = ny * width + nx;
+                    if (grid[neighborIndex].nationId == nation.id
+                        && !WorldRenderer.IsBorderCell(grid, nx, ny, width, height, nation.id))
+                    {
+                        worldRenderer.SetPixelColor(neighborIndex, worldRenderer.GetDisplayColor(nation.id, nation.color));
+                    }
+                }
+            }
+        }
+
+        public bool CanRecruit(City city, int amount)
+        {
+            Nation nation = GetNation(city);
+            return city != null
+                && nation != null
+                && amount > 0
+                && nation.armyCount + amount <= fixedArmyTarget
+                && nation.treasury >= recruitCost * amount;
+        }
+
+        public bool TryRecruit(City city, int amount)
+        {
+            if (!CanRecruit(city, amount))
+                return false;
+
+            Nation nation = GetNation(city);
+            city.armyCount += amount;
+            nation.armyCount += amount;
+            nation.treasury -= recruitCost * amount;
+            nation.upkeepPerSec = nation.armyCount * upkeepPerSoldier;
+            return true;
+        }
+
+        public void Disband(City city, int amount)
+        {
+            Nation nation = GetNation(city);
+            if (city == null || nation == null || amount <= 0)
+                return;
+
+            int removed = Mathf.Min(city.armyCount, amount);
+            city.armyCount -= removed;
+            nation.armyCount -= removed;
+            nation.upkeepPerSec = nation.armyCount * upkeepPerSoldier;
+        }
+
+        public bool MoveTroops(City origin, City destination, float percentage)
+        {
+            if (origin == null || destination == null || origin == destination)
+                return false;
+
+            Nation nation = GetNation(origin);
+            if (nation == null || destination.nationId != nation.id || percentage <= 0f)
+                return false;
+
+            int moving = Mathf.Clamp(Mathf.FloorToInt(origin.armyCount * percentage / 100f), 0, origin.armyCount);
+            if (moving == 0)
+                return false;
+
+            origin.armyCount -= moving;
+            destination.armyCount += moving;
+            return true;
+        }
+
+        private Nation GetNation(City city)
+        {
+            if (city == null || nations == null || city.nationId < 0 || city.nationId >= nations.Count)
+                return null;
+
+            return nations[city.nationId];
         }
 
         private void UpdateEconomyAndMilitary(float deltaTime)
@@ -248,6 +285,10 @@ namespace AgesOfConflict
             for (int i = 0; i < nations.Count; i++)
             {
                 Nation n = nations[i];
+                int totalArmy = 0;
+                for (int c = 0; c < n.cities.Count; c++)
+                    totalArmy += n.cities[c].armyCount;
+                n.armyCount = totalArmy;
 
                 // 1. Income based on territory size
                 n.incomePerSec = n.territorySize * incomePerPixel;
@@ -258,21 +299,27 @@ namespace AgesOfConflict
                 // 3. Treasury balance
                 n.treasury += (n.incomePerSec - n.upkeepPerSec) * deltaTime;
 
-                // 4. Recruitment logic (up to fixed low target)
+                // Army size is player-managed. This simulation only applies payroll.
                 n.maxArmyTarget = fixedArmyTarget;
-                if (n.armyCount < n.maxArmyTarget && n.treasury >= recruitCost * 1.5f)
-                {
-                    n.armyCount++;
-                    n.treasury -= recruitCost;
-                }
 
-                // 5. Desertion if bankrupt
+                // Desertion if bankrupt
                 if (n.treasury < 0f)
                 {
                     n.treasury = 0f;
-                    if (n.armyCount > 5)
+                    if (n.armyCount > 0)
                     {
-                        n.armyCount--; // 1 soldier leaves due to unpaid wages
+                        City largestGarrison = null;
+                        for (int c = 0; c < n.cities.Count; c++)
+                        {
+                            if (largestGarrison == null || n.cities[c].armyCount > largestGarrison.armyCount)
+                                largestGarrison = n.cities[c];
+                        }
+
+                        if (largestGarrison != null && largestGarrison.armyCount > 0)
+                        {
+                            largestGarrison.armyCount--;
+                            n.armyCount--;
+                        }
                     }
                 }
             }
