@@ -283,6 +283,16 @@ namespace AgesOfConflict
             return true;
         }
 
+        public void ReturnFieldTroops(City destination, int amount)
+        {
+            Nation nation = GetNation(destination);
+            if (nation == null || amount <= 0)
+                return;
+
+            destination.armyCount += amount;
+            nation.fieldArmyCount = Mathf.Max(0, nation.fieldArmyCount - amount);
+        }
+
         private Nation GetNation(City city)
         {
             if (city == null || nations == null || city.nationId < 0 || city.nationId >= nations.Count)

@@ -15,6 +15,10 @@ namespace AgesOfConflict
         public float buildCityCost = 100f;
         public int minCitySpacing = 6;
 
+        [Header("Troop Movement")]
+        [Tooltip("World cells travelled per second. Troops move at this speed regardless of route length.")]
+        public float troopMoveSpeed = 35f;
+
         [Header("Simulation State")]
         public bool isRunning = true;
         [Range(0.01f, 0.5f)] public float tickInterval = 0.04f; // 25 ticks/sec
@@ -32,6 +36,10 @@ namespace AgesOfConflict
         private City selectedCity = null;
         private readonly List<Vector3> troopPathPreview = new List<Vector3>();
         private readonly List<ArmyRoute> armyRoutes = new List<ArmyRoute>();
+        private readonly List<MovingTroop> movingTroops = new List<MovingTroop>();
+        private int[] pathSearchVisited;
+        private int[] pathSearchPrevious;
+        private int pathSearchVersion;
         private ArmyRoute selectedArmyRoute;
         private Texture2D overlayTexture;
         private Texture2D garrisonMarkerTexture;
@@ -42,6 +50,16 @@ namespace AgesOfConflict
             public int nationId;
             public List<Vector3> points;
             public List<TroopGroup> groups;
+        }
+
+        private class MovingTroop
+        {
+            public TroopGroup group;
+            public List<Vector2> path;
+            public int nextWaypoint;
+            public ArmyRoute destinationRoute;
+            public City destinationCity;
+            public ArmyRoute routeToRemoveOnArrival;
         }
 
         // Context menu state
@@ -129,7 +147,15 @@ namespace AgesOfConflict
         {
             if (selectedArmyRoute != null)
             {
-                CreatePointGarrison(worldPos);
+                City destinationCity = FindCityAt(worldPos);
+                if (destinationCity != null && destinationCity.nationId == selectedArmyRoute.nationId)
+                {
+                    MoveRouteToCity(selectedArmyRoute, destinationCity);
+                }
+                else
+                {
+                    CreatePointGarrison(worldPos);
+                }
                 return;
             }
 
@@ -199,17 +225,9 @@ namespace AgesOfConflict
                 return;
             }
 
-            int soldiers = 0;
-            foreach (TroopGroup group in selectedArmyRoute.groups)
-                soldiers += group.soldierCount;
-
             Vector3 point = new Vector3(worldPos.x, worldPos.y, 0f);
-            selectedArmyRoute.points = new List<Vector3> { point };
-            selectedArmyRoute.groups = new List<TroopGroup>
-            {
-                new TroopGroup(selectedArmyRoute.nationId, soldiers, new Vector2(point.x, point.y))
-            };
-            commandMessage = $"Created a field garrison of {soldiers} soldiers.";
+            if (RelocateRoute(selectedArmyRoute, new List<Vector3> { point }))
+                commandMessage = "Troops are moving to the new field garrison.";
         }
 
         private void HandleNationSelection(Vector3 worldPos)
@@ -313,23 +331,30 @@ namespace AgesOfConflict
                 foreach (TroopGroup group in selectedArmyRoute.groups)
                     routeSoldiers += group.soldierCount;
 
-                selectedArmyRoute.points = path;
-                selectedArmyRoute.groups = BuildTroopGroups(selectedArmyRoute.nationId, routeSoldiers, path);
-                commandMessage = $"Redrew the route for {routeSoldiers} soldiers.";
+                if (RelocateRoute(selectedArmyRoute, path))
+                    commandMessage = $"Redrew the route for {routeSoldiers} soldiers.";
                 return;
             }
 
             int soldiers = selectedCity.armyCount;
-            if (!nationSimulator.DeployTroops(selectedCity, soldiers))
+            List<TroopGroup> arrivingGroups = BuildTroopGroups(selectedNation.id, soldiers, path);
+            List<TroopGroup> departingGroups = SplitTroops(
+                selectedNation.id, soldiers, new Vector2(selectedCity.position.x, selectedCity.position.y));
+            if (!TryBuildMovementPlans(departingGroups, arrivingGroups, selectedNation.id, out List<List<Vector2>> movementPaths))
+            {
+                commandMessage = "No friendly-territory route exists to that line.";
                 return;
+            }
 
             ArmyRoute route = new ArmyRoute
             {
                 nationId = selectedNation.id,
                 points = path,
-                groups = BuildTroopGroups(selectedNation.id, soldiers, path)
+                groups = new List<TroopGroup>()
             };
             armyRoutes.Add(route);
+            nationSimulator.DeployTroops(selectedCity, soldiers);
+            StartMovements(departingGroups, movementPaths, route, null, null);
             selectedArmyRoute = route;
             commandMessage = $"Deployed {soldiers} soldiers from {selectedCity.name}.";
         }
@@ -353,6 +378,215 @@ namespace AgesOfConflict
             }
 
             return validPath;
+        }
+
+        private bool RelocateRoute(ArmyRoute route, List<Vector3> destinationPath)
+        {
+            List<TroopGroup> departingGroups = SplitTroops(route.groups);
+            if (departingGroups.Count == 0)
+            {
+                commandMessage = "There are no stationed troops to move.";
+                return false;
+            }
+
+            int totalSoldiers = 0;
+            foreach (TroopGroup group in departingGroups)
+                totalSoldiers += group.soldierCount;
+
+            List<TroopGroup> arrivingGroups = destinationPath.Count == 1
+                ? CreateGroupsAt(destinationPath[0], departingGroups)
+                : BuildTroopGroups(route.nationId, totalSoldiers, destinationPath);
+
+            if (!TryBuildMovementPlans(departingGroups, arrivingGroups, route.nationId, out List<List<Vector2>> movementPaths))
+            {
+                commandMessage = "No friendly-territory route exists to that destination.";
+                return false;
+            }
+
+            route.points = destinationPath;
+            route.groups.Clear();
+            StartMovements(departingGroups, movementPaths, route, null, null);
+            return true;
+        }
+
+        private void MoveRouteToCity(ArmyRoute route, City destination)
+        {
+            List<TroopGroup> departingGroups = SplitTroops(route.groups);
+            if (departingGroups.Count == 0)
+            {
+                commandMessage = "There are no stationed troops to return.";
+                return;
+            }
+
+            List<TroopGroup> arrivingGroups = new List<TroopGroup>(departingGroups.Count);
+            foreach (TroopGroup group in departingGroups)
+                arrivingGroups.Add(new TroopGroup(
+                    route.nationId, group.soldierCount, new Vector2(destination.position.x, destination.position.y)));
+
+            if (!TryBuildMovementPlans(departingGroups, arrivingGroups, route.nationId, out List<List<Vector2>> movementPaths))
+            {
+                commandMessage = $"No friendly-territory route exists to {destination.name}.";
+                return;
+            }
+
+            route.groups.Clear();
+            StartMovements(departingGroups, movementPaths, null, destination, route);
+            commandMessage = $"Troops are returning to {destination.name}.";
+        }
+
+        private List<TroopGroup> SplitTroops(List<TroopGroup> groups)
+        {
+            List<TroopGroup> result = new List<TroopGroup>();
+            foreach (TroopGroup group in groups)
+            {
+                int remaining = group.soldierCount;
+                while (remaining > 0)
+                {
+                    int count = Mathf.Min(10, remaining);
+                    result.Add(new TroopGroup(group.nationId, count, group.position));
+                    remaining -= count;
+                }
+            }
+            return result;
+        }
+
+        private List<TroopGroup> CreateGroupsAt(Vector3 position, List<TroopGroup> sourceGroups)
+        {
+            List<TroopGroup> result = new List<TroopGroup>(sourceGroups.Count);
+            foreach (TroopGroup group in sourceGroups)
+                result.Add(new TroopGroup(group.nationId, group.soldierCount, new Vector2(position.x, position.y)));
+            return result;
+        }
+
+        private List<TroopGroup> SplitTroops(int nationId, int soldiers, Vector2 position)
+        {
+            return SplitTroops(new List<TroopGroup> { new TroopGroup(nationId, soldiers, position) });
+        }
+
+        private bool TryBuildMovementPlans(
+            List<TroopGroup> departingGroups,
+            List<TroopGroup> arrivingGroups,
+            int nationId,
+            out List<List<Vector2>> movementPaths)
+        {
+            movementPaths = new List<List<Vector2>>(departingGroups.Count);
+            if (departingGroups.Count != arrivingGroups.Count)
+                return false;
+
+            for (int i = 0; i < departingGroups.Count; i++)
+            {
+                if (!TryFindFriendlyPath(nationId, departingGroups[i].position, arrivingGroups[i].position, out List<Vector2> path))
+                    return false;
+
+                movementPaths.Add(path);
+            }
+
+            return true;
+        }
+
+        private void StartMovements(
+            List<TroopGroup> groups,
+            List<List<Vector2>> paths,
+            ArmyRoute destinationRoute,
+            City destinationCity,
+            ArmyRoute routeToRemoveOnArrival)
+        {
+            for (int i = 0; i < groups.Count; i++)
+            {
+                movingTroops.Add(new MovingTroop
+                {
+                    group = groups[i],
+                    path = paths[i],
+                    nextWaypoint = 1,
+                    destinationRoute = destinationRoute,
+                    destinationCity = destinationCity,
+                    routeToRemoveOnArrival = routeToRemoveOnArrival
+                });
+            }
+        }
+
+        private bool TryFindFriendlyPath(int nationId, Vector2 start, Vector2 destination, out List<Vector2> path)
+        {
+            path = null;
+            if (worldGenerator == null || worldGenerator.Grid == null)
+                return false;
+
+            int width = worldGenerator.width;
+            int height = worldGenerator.height;
+            int startX = Mathf.FloorToInt(start.x);
+            int startY = Mathf.FloorToInt(start.y);
+            int endX = Mathf.FloorToInt(destination.x);
+            int endY = Mathf.FloorToInt(destination.y);
+            if (!IsFriendlyCell(startX, startY, nationId) || !IsFriendlyCell(endX, endY, nationId))
+                return false;
+
+            int cellCount = width * height;
+            if (pathSearchVisited == null || pathSearchVisited.Length != cellCount)
+            {
+                pathSearchVisited = new int[cellCount];
+                pathSearchPrevious = new int[cellCount];
+                pathSearchVersion = 0;
+            }
+
+            if (pathSearchVersion == int.MaxValue)
+            {
+                System.Array.Clear(pathSearchVisited, 0, pathSearchVisited.Length);
+                pathSearchVersion = 0;
+            }
+            int searchVersion = ++pathSearchVersion;
+            int startIndex = startY * width + startX;
+            int endIndex = endY * width + endX;
+            Queue<int> open = new Queue<int>();
+            open.Enqueue(startIndex);
+            pathSearchVisited[startIndex] = searchVersion;
+            pathSearchPrevious[startIndex] = -1;
+
+            int[] dx = { 0, 0, 1, -1 };
+            int[] dy = { 1, -1, 0, 0 };
+            while (open.Count > 0)
+            {
+                int current = open.Dequeue();
+                if (current == endIndex)
+                    break;
+
+                int x = current % width;
+                int y = current / width;
+                for (int direction = 0; direction < 4; direction++)
+                {
+                    int nextX = x + dx[direction];
+                    int nextY = y + dy[direction];
+                    if (!IsFriendlyCell(nextX, nextY, nationId))
+                        continue;
+
+                    int next = nextY * width + nextX;
+                    if (pathSearchVisited[next] == searchVersion)
+                        continue;
+
+                    pathSearchVisited[next] = searchVersion;
+                    pathSearchPrevious[next] = current;
+                    open.Enqueue(next);
+                }
+            }
+
+            if (pathSearchVisited[endIndex] != searchVersion)
+                return false;
+
+            List<Vector2> reversed = new List<Vector2>();
+            for (int current = endIndex; current != -1; current = pathSearchPrevious[current])
+                reversed.Add(new Vector2(current % width + 0.5f, current / width + 0.5f));
+            reversed.Reverse();
+            path = new List<Vector2>(reversed.Count + 2) { start };
+            path.AddRange(reversed);
+            if (Vector2.Distance(path[path.Count - 1], destination) > 0.01f)
+                path.Add(destination);
+            return true;
+        }
+
+        private bool IsFriendlyCell(int x, int y, int nationId)
+        {
+            return x >= 0 && x < worldGenerator.width
+                && y >= 0 && y < worldGenerator.height
+                && worldGenerator.Grid[y * worldGenerator.width + x].nationId == nationId;
         }
 
         private bool IsInsideSelectedTerritory(Vector3 worldPosition)
@@ -434,6 +668,7 @@ namespace AgesOfConflict
         {
             HandleHotkeys();
             UpdateHoveredNation();
+            UpdateMovingTroops();
 
             // Close context menu if left-clicked outside
             if (showContextMenu && (Input.GetMouseButtonDown(0) || (Input.touchCount > 0 && Input.GetTouch(0).phase == TouchPhase.Began)))
@@ -456,6 +691,78 @@ namespace AgesOfConflict
                     nationSimulator.StepSimulation(tickInterval);
                 }
             }
+        }
+
+        private void UpdateMovingTroops()
+        {
+            float movementPerTroop = Mathf.Max(0f, troopMoveSpeed) * Time.deltaTime;
+            for (int i = movingTroops.Count - 1; i >= 0; i--)
+            {
+                MovingTroop moving = movingTroops[i];
+                // Each rectangle receives a full movement budget this frame, so a
+                // formation moves concurrently instead of sharing one budget.
+                float distanceThisFrame = movementPerTroop;
+                while (distanceThisFrame > 0f && moving.nextWaypoint < moving.path.Count)
+                {
+                    Vector2 target = moving.path[moving.nextWaypoint];
+                    float remaining = Vector2.Distance(moving.group.position, target);
+                    if (remaining <= distanceThisFrame)
+                    {
+                        moving.group.position = target;
+                        distanceThisFrame -= remaining;
+                        moving.nextWaypoint++;
+                    }
+                    else
+                    {
+                        moving.group.position = Vector2.MoveTowards(moving.group.position, target, distanceThisFrame);
+                        distanceThisFrame = 0f;
+                    }
+                }
+
+                if (moving.nextWaypoint < moving.path.Count)
+                    continue;
+
+                CompleteMovement(moving);
+                movingTroops.RemoveAt(i);
+            }
+        }
+
+        private void CompleteMovement(MovingTroop moving)
+        {
+            if (moving.destinationRoute != null)
+            {
+                // A field garrison is represented by one marker; merge arrivals into it.
+                if (moving.destinationRoute.points.Count == 1 && moving.destinationRoute.groups.Count > 0)
+                    moving.destinationRoute.groups[0].soldierCount += moving.group.soldierCount;
+                else
+                    moving.destinationRoute.groups.Add(moving.group);
+            }
+
+            if (moving.destinationCity != null)
+            {
+                if (moving.routeToRemoveOnArrival != null)
+                    nationSimulator.ReturnFieldTroops(moving.destinationCity, moving.group.soldierCount);
+                else
+                    moving.destinationCity.armyCount += moving.group.soldierCount;
+            }
+
+            if (moving.routeToRemoveOnArrival != null && CountPendingMovementsFor(moving.routeToRemoveOnArrival) <= 1)
+            {
+                armyRoutes.Remove(moving.routeToRemoveOnArrival);
+                if (selectedArmyRoute == moving.routeToRemoveOnArrival)
+                    selectedArmyRoute = null;
+            }
+        }
+
+        private int CountPendingMovementsFor(ArmyRoute route)
+        {
+            int count = 0;
+            foreach (MovingTroop moving in movingTroops)
+            {
+                if (moving.routeToRemoveOnArrival == route)
+                    count++;
+            }
+            return count;
         }
 
         private void UpdateHoveredNation()
@@ -602,6 +909,7 @@ namespace AgesOfConflict
             selectedCity = null;
             selectedArmyRoute = null;
             armyRoutes.Clear();
+            movingTroops.Clear();
             troopPathPreview.Clear();
             worldRenderer.SetSelectedNation(-1);
             worldRenderer.SetSelectedCity(null);
@@ -845,6 +1153,9 @@ namespace AgesOfConflict
                         DrawTroopGroupMarker(group, route == selectedArmyRoute);
                 }
             }
+
+            foreach (MovingTroop moving in movingTroops)
+                DrawTroopGroupMarker(moving.group, false);
 
             if (troopPathPreview.Count > 1 && selectedNation != null)
             {
@@ -1180,9 +1491,9 @@ namespace AgesOfConflict
             GUI.enabled = validPercentage;
             if (GUILayout.Button("Move Troops", GUILayout.Height(28)) || (submitMoveWithEnter && validPercentage))
             {
-                if (nationSimulator.MoveTroops(transferOrigin, transferDestination, percentage))
+                if (StartCityTransfer(transferOrigin, transferDestination, percentage))
                 {
-                    commandMessage = $"Moved {percentage:F0}% from {transferOrigin.name} to {transferDestination.name}.";
+                    commandMessage = $"Troops are moving from {transferOrigin.name} to {transferDestination.name}.";
                     showTransferDialog = false;
                     if (submitMoveWithEnter)
                     {
@@ -1199,6 +1510,29 @@ namespace AgesOfConflict
             }
             GUILayout.EndHorizontal();
             GUILayout.EndArea();
+        }
+
+        private bool StartCityTransfer(City origin, City destination, float percentage)
+        {
+            int soldiers = Mathf.FloorToInt(origin.armyCount * percentage / 100f);
+            if (soldiers <= 0)
+                return false;
+
+            List<TroopGroup> departingGroups = SplitTroops(
+                origin.nationId, soldiers, new Vector2(origin.position.x, origin.position.y));
+            List<TroopGroup> arrivingGroups = CreateGroupsAt(
+                new Vector3(destination.position.x, destination.position.y, 0f), departingGroups);
+            if (!TryBuildMovementPlans(departingGroups, arrivingGroups, origin.nationId, out List<List<Vector2>> movementPaths))
+            {
+                commandMessage = $"No friendly-territory route exists to {destination.name}.";
+                return false;
+            }
+
+            // The soldiers are reserved immediately, but do not join the destination
+            // garrison until their on-map rectangles actually arrive.
+            origin.armyCount -= soldiers;
+            StartMovements(departingGroups, movementPaths, null, destination, null);
+            return true;
         }
 
         private void BuildCityAt(Nation nation, Vector2Int pos)
