@@ -147,7 +147,7 @@ namespace AgesOfConflict
         {
             if (selectedArmyRoute != null)
             {
-                City destinationCity = FindCityAt(worldPos);
+                City destinationCity = FindCityAt(worldPos, 4f);
                 if (destinationCity != null && destinationCity.nationId == selectedArmyRoute.nationId)
                 {
                     MoveRouteToCity(selectedArmyRoute, destinationCity);
@@ -156,6 +156,15 @@ namespace AgesOfConflict
                 {
                     CreatePointGarrison(worldPos);
                 }
+                return;
+            }
+
+            // A selected city turns a right-click into a deployment order. Do this
+            // before opening the construction context menu, even on empty land.
+            if (selectedCity != null && selectedNation != null
+                && selectedCity.nationId == selectedNation.id)
+            {
+                DeployCityToGarrison(worldPos);
                 return;
             }
 
@@ -212,13 +221,6 @@ namespace AgesOfConflict
 
         private void CreatePointGarrison(Vector3 worldPos)
         {
-            City destinationCity = FindCityAt(worldPos, 4f);
-            if (destinationCity != null)
-            {
-                ReturnArmyToCity(destinationCity);
-                return;
-            }
-
             if (!IsInsideSelectedTerritory(worldPos))
             {
                 commandMessage = "A garrison must be placed inside the selected nation's territory.";
@@ -228,6 +230,46 @@ namespace AgesOfConflict
             Vector3 point = new Vector3(worldPos.x, worldPos.y, 0f);
             if (RelocateRoute(selectedArmyRoute, new List<Vector3> { point }))
                 commandMessage = "Troops are moving to the new field garrison.";
+        }
+
+        private void DeployCityToGarrison(Vector3 worldPos)
+        {
+            if (!IsInsideSelectedTerritory(worldPos))
+            {
+                commandMessage = "Troops must remain inside the selected nation's territory.";
+                return;
+            }
+
+            int soldiers = selectedCity.armyCount;
+            if (soldiers <= 0)
+            {
+                commandMessage = $"{selectedCity.name} has no troops to deploy.";
+                return;
+            }
+
+            List<TroopGroup> departingGroups = SplitTroops(
+                selectedNation.id, soldiers, new Vector2(selectedCity.position.x, selectedCity.position.y));
+            List<TroopGroup> arrivingGroups = CreateGroupsAt(worldPos, departingGroups);
+            if (!TryBuildMovementPlans(departingGroups, arrivingGroups, selectedNation.id, out List<List<Vector2>> movementPaths))
+            {
+                commandMessage = "No friendly-territory route exists to that point.";
+                return;
+            }
+
+            ArmyRoute garrison = new ArmyRoute
+            {
+                nationId = selectedNation.id,
+                points = new List<Vector3> { new Vector3(worldPos.x, worldPos.y, 0f) },
+                groups = new List<TroopGroup>()
+            };
+            armyRoutes.Add(garrison);
+            string cityName = selectedCity.name;
+            nationSimulator.DeployTroops(selectedCity, soldiers);
+            StartMovements(departingGroups, movementPaths, garrison, null, null);
+            selectedCity = null;
+            worldRenderer.SetSelectedCity(null);
+            selectedArmyRoute = garrison;
+            commandMessage = $"Troops are moving from {cityName} to a field garrison.";
         }
 
         private void HandleNationSelection(Vector3 worldPos)
@@ -271,30 +313,6 @@ namespace AgesOfConflict
             worldRenderer.SetSelectedNation(selectedNation.id);
             worldRenderer.SetSelectedCity(selectedCity);
             commandMessage = $"Now controlling {selectedNation.name}.";
-        }
-
-        private void ReturnArmyToCity(City destinationCity)
-        {
-            if (destinationCity.nationId != selectedArmyRoute.nationId)
-            {
-                commandMessage = "Units can only return to a city of their own nation.";
-                return;
-            }
-
-            int soldiers = 0;
-            foreach (TroopGroup group in selectedArmyRoute.groups)
-                soldiers += group.soldierCount;
-
-            Nation nation = worldGenerator.Nations[selectedArmyRoute.nationId];
-            destinationCity.armyCount += soldiers;
-            nation.fieldArmyCount = Mathf.Max(0, nation.fieldArmyCount - soldiers);
-            armyRoutes.Remove(selectedArmyRoute);
-            selectedArmyRoute = null;
-            selectedNation = nation;
-            selectedCity = destinationCity;
-            worldRenderer.SetSelectedNation(nation.id);
-            worldRenderer.SetSelectedCity(destinationCity);
-            commandMessage = $"Returned {soldiers} soldiers to {destinationCity.name}.";
         }
 
         private bool CanDrawTroopPath()
@@ -795,6 +813,13 @@ namespace AgesOfConflict
 
         private void HandleHotkeys()
         {
+            if (IsEscapePressed() && selectedCity != null)
+            {
+                selectedCity = null;
+                worldRenderer.SetSelectedCity(null);
+                commandMessage = "City deselected.";
+            }
+
             if (IsSpacePressed()) isRunning = !isRunning;
             if (IsSPressed() && !isRunning && nationSimulator != null) nationSimulator.StepSimulation(tickInterval);
             if (IsRPressed()) Regenerate();
@@ -804,6 +829,18 @@ namespace AgesOfConflict
             if (Is2Pressed()) speedMultiplier = 2;
             if (Is3Pressed()) speedMultiplier = 5;
             if (Is4Pressed()) speedMultiplier = 10;
+        }
+
+        private bool IsEscapePressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Keyboard.current != null
+                && UnityEngine.InputSystem.Keyboard.current.escapeKey.wasPressedThisFrame) return true;
+#endif
+#if ENABLE_LEGACY_INPUT_MANAGER
+            if (Input.GetKeyDown(KeyCode.Escape)) return true;
+#endif
+            return false;
         }
 
         private bool IsSpacePressed()
@@ -1013,7 +1050,8 @@ namespace AgesOfConflict
             GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan");
             GUILayout.Label("• <b>LMB territory</b>: Select nation | <b>RMB city</b>: Recruit");
             GUILayout.Label("• <b>LMB drag city→city</b>: Move troops");
-            GUILayout.Label("• Select a city, then <b>RMB-drag</b> a route to deploy its garrison");
+            GUILayout.Label("• Select a city, then <b>RMB-click</b> a garrison or <b>RMB-drag</b> a route");
+            GUILayout.Label("• <b>Esc</b>: Deselect the current city");
             GUILayout.Label("• LMB a black route or troop marker, then RMB-drag to redraw it");
             GUILayout.Label("• With a route selected, RMB-click to turn it into a field garrison");
             GUILayout.Label("• With units selected, RMB-click a friendly city to return them");
