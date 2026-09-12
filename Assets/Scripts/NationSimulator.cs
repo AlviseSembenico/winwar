@@ -9,10 +9,18 @@ namespace AgesOfConflict
         [Header("Expansion Settings")]
         [Tooltip("Number of expansion attempts each nation makes per simulation tick")]
         [Range(1, 50)] public int expansionRate = 8;
+        [HideInInspector] public int expansionBoostNationId = -1;
+        [HideInInspector] public int expansionBoostMultiplier = 1;
 
         [Header("Economy Tuning")]
         [Tooltip("Gold earned per second for each owned pixel")]
         public float incomePerPixel = 0.04f;
+
+        [Header("Population Tuning")]
+        [Tooltip("People gained per owned pixel each second, until the population cap is reached.")]
+        [Min(0f)] public float populationGrowthPerPixel = 0.05f;
+        [Tooltip("Maximum population supported by each owned pixel.")]
+        [Min(0f)] public float maximumPopulationPerPixel = 100f;
 
         public int TotalLandCells { get; private set; }
         public int ClaimedLandCells { get; private set; }
@@ -108,6 +116,7 @@ namespace AgesOfConflict
             }
 
             UpdateEconomy(deltaTime);
+            UpdatePopulation(deltaTime);
             if (IsFullyColonized)
                 return false;
 
@@ -127,7 +136,8 @@ namespace AgesOfConflict
             for (int i = 0; i < nationIndices.Count; i++)
             {
                 Nation nation = nations[nationIndices[i]];
-                int attempts = Mathf.Min(expansionRate, nation.frontier.Count);
+                int multiplier = nation.id == expansionBoostNationId ? Mathf.Max(1, expansionBoostMultiplier) : 1;
+                int attempts = Mathf.Min(expansionRate * multiplier, nation.frontier.Count);
                 for (int attempt = 0; attempt < attempts && nation.frontier.Count > 0; attempt++)
                 {
                     int frontierIndex = UnityEngine.Random.Range(0, nation.frontier.Count);
@@ -190,7 +200,7 @@ namespace AgesOfConflict
             worldRenderer.SetPixelColor(
                 cellIndex,
                 worldRenderer.showBorders && WorldRenderer.IsBorderCell(grid, x, y, width, height, nation.id)
-                    ? worldRenderer.borderColor
+                    ? worldRenderer.GetBorderColor(grid, x, y, width, height, nation.id)
                     : worldRenderer.GetDisplayColor(nation.id, nation.color));
 
             for (int direction = 0; direction < 4; direction++)
@@ -264,6 +274,17 @@ namespace AgesOfConflict
                 nation.incomePerSec = nation.territorySize * incomePerPixel;
                 nation.upkeepPerSec = 0f;
                 nation.treasury += nation.incomePerSec * deltaTime;
+            }
+        }
+
+        private void UpdatePopulation(float deltaTime)
+        {
+            for (int i = 0; i < nations.Count; i++)
+            {
+                Nation nation = nations[i];
+                float populationCap = nation.territorySize * maximumPopulationPerPixel;
+                float growth = nation.territorySize * populationGrowthPerPixel * deltaTime;
+                nation.population = Mathf.Min(populationCap, nation.population + growth);
             }
         }
     }

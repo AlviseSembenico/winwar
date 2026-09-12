@@ -48,6 +48,9 @@ namespace AgesOfConflict
 
         [Header("Economy")]
         public float treasury = 1000f;
+
+        [Header("Population")]
+        public float population;
         public float incomePerSec;
         public float upkeepPerSec;
         public float netIncomePerSec => incomePerSec - upkeepPerSec;
@@ -60,6 +63,7 @@ namespace AgesOfConflict
         public Nation(int id, string name, Color32 color, Vector2Int capital)
         {
             this.id = id; this.name = name; this.color = color; this.capital = capital;
+            population = 100f;
             cities.Add(new City(0, $"{name} City", id, capital, true, 10f));
         }
     }

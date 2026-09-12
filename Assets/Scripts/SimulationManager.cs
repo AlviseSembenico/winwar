@@ -28,6 +28,10 @@ namespace AgesOfConflict
         public bool isRunning = true;
         [Range(0.01f, 0.5f)] public float tickInterval = 0.04f;
         public int speedMultiplier = 1;
+        [Tooltip("The selected nation receives five expansion attempts for every normal attempt.")]
+        public bool selectedNationGrowsFaster = true;
+        [Tooltip("Prevents selecting a different nation after taking control of one.")]
+        public bool lockControlledNation;
 
         [Header("Runtime Info")]
         [SerializeField] private int currentSeed;
@@ -45,6 +49,7 @@ namespace AgesOfConflict
         private Nation contextNation;
         private City contextCity;
         private string commandMessage;
+        private string attackPercentage = "10";
         private readonly List<War> wars = new List<War>();
         private Texture2D warMarkerTexture;
 
@@ -53,6 +58,8 @@ namespace AgesOfConflict
             public int attackerId;
             public int defenderId;
             public float captureProgress;
+            public float casualtyProgress;
+            public float attackingPercentage;
             public readonly List<WarFlag> flags = new List<WarFlag>();
         }
 
@@ -61,7 +68,6 @@ namespace AgesOfConflict
         {
             public int nationId;
             public Vector2 position;
-            public Vector2 targetPosition;
             public Color color;
         }
 
@@ -99,7 +105,14 @@ namespace AgesOfConflict
         {
             if (!TryGetCell(worldPos, out Cell cell)) return;
             if (!cell.HasOwner || cell.nationId >= worldGenerator.Nations.Count) return;
+            if (selectedNation != null && lockControlledNation && cell.nationId != selectedNation.id)
+            {
+                commandMessage = $"Control is locked to {selectedNation.name}.";
+                return;
+            }
+            bool selectingFirstNation = selectedNation == null;
             selectedNation = worldGenerator.Nations[cell.nationId];
+            if (selectingFirstNation) lockControlledNation = true;
             selectedCity = FindCityAt(worldPos);
             worldRenderer.SetSelectedNation(selectedNation.id);
             worldRenderer.SetSelectedCity(selectedCity);
@@ -169,25 +182,25 @@ namespace AgesOfConflict
                 while (tickTimer >= tickInterval)
                 {
                     tickTimer -= tickInterval;
+                    ConfigureSelectedNationExpansionBoost();
                     nationSimulator.StepSimulation(tickInterval);
                     AdvanceWars(tickInterval);
                 }
             }
-            UpdateWarFlagPositions(Time.deltaTime * speedMultiplier);
         }
 
-        private void UpdateWarFlagPositions(float deltaTime)
+        private void ConfigureSelectedNationExpansionBoost()
         {
-            foreach (War war in wars)
-                foreach (WarFlag flag in war.flags)
-                    flag.position = Vector2.MoveTowards(flag.position, flag.targetPosition, 8f * deltaTime);
+            if (nationSimulator == null) return;
+            nationSimulator.expansionBoostNationId = selectedNationGrowsFaster && selectedNation != null ? selectedNation.id : -1;
+            nationSimulator.expansionBoostMultiplier = 5;
         }
 
         private void HandleHotkeys()
         {
             if (Input.GetKeyDown(KeyCode.Escape)) { selectedCity = null; showContextMenu = false; worldRenderer?.SetSelectedCity(null); }
             if (Input.GetKeyDown(KeyCode.Space)) isRunning = !isRunning;
-            if (Input.GetKeyDown(KeyCode.S) && !isRunning) { nationSimulator?.StepSimulation(tickInterval); AdvanceWars(tickInterval); }
+            if (Input.GetKeyDown(KeyCode.S) && !isRunning) { ConfigureSelectedNationExpansionBoost(); nationSimulator?.StepSimulation(tickInterval); AdvanceWars(tickInterval); }
             if (Input.GetKeyDown(KeyCode.R)) Regenerate();
             if (Input.GetKeyDown(KeyCode.F)) cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
             if (Input.GetKeyDown(KeyCode.Alpha1)) speedMultiplier = 1;
@@ -214,6 +227,7 @@ namespace AgesOfConflict
             currentSeed = worldGenerator.seed; activeNations = worldGenerator.Nations.Count;
             worldRenderer.SetSelectedNation(-1); worldRenderer.SetSelectedCity(null);
             worldRenderer.RenderWorld(worldGenerator.Grid, worldGenerator.Nations, worldGenerator.width, worldGenerator.height);
+            RefreshWarBorderHighlight();
             nationSimulator?.Initialize(worldGenerator.Grid, worldGenerator.Nations, worldGenerator.width, worldGenerator.height, worldRenderer);
             cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
             tickTimer = 0f;
@@ -230,15 +244,19 @@ namespace AgesOfConflict
 
         private void DrawControlPanel()
         {
-            GUI.Box(new Rect(15, 15, 280, 335), "Ages of Conflict - Simulation");
-            GUILayout.BeginArea(new Rect(25, 40, 260, 300));
+            GUI.Box(new Rect(15, 15, 280, 365), "Ages of Conflict - Simulation");
+            GUILayout.BeginArea(new Rect(25, 40, 260, 330));
             GUILayout.Label($"<b>Resolution:</b> {worldGenerator.width} x {worldGenerator.height}");
             GUILayout.Label($"<b>Seed:</b> {currentSeed} | <b>Nations:</b> {activeNations}");
             GUILayout.Label($"<b>Controlling:</b> {(selectedNation == null ? "None (left-click a nation)" : selectedNation.name)}");
+            selectedNationGrowsFaster = GUILayout.Toggle(selectedNationGrowsFaster, "Selected state grows 5× faster", GUILayout.Height(26));
+            GUI.enabled = selectedNation != null;
+            lockControlledNation = GUILayout.Toggle(lockControlledNation, "Lock controlled nation", GUILayout.Height(26));
+            GUI.enabled = true;
             if (nationSimulator != null) GUILayout.Label($"<b>Colonization:</b> {nationSimulator.ColonizedPercentage:F1}% Claimed");
             GUILayout.Space(8); GUILayout.BeginHorizontal();
             if (GUILayout.Button(isRunning ? "⏸ Pause [Space]" : "▶ Play [Space]", GUILayout.Height(30))) isRunning = !isRunning;
-            GUI.enabled = !isRunning; if (GUILayout.Button("Step [S]", GUILayout.Height(30), GUILayout.Width(75))) nationSimulator?.StepSimulation(tickInterval); GUI.enabled = true;
+            GUI.enabled = !isRunning; if (GUILayout.Button("Step [S]", GUILayout.Height(30), GUILayout.Width(75))) { ConfigureSelectedNationExpansionBoost(); nationSimulator?.StepSimulation(tickInterval); AdvanceWars(tickInterval); } GUI.enabled = true;
             GUILayout.EndHorizontal();
             if (GUILayout.Button("🔄 Regenerate Map [R]", GUILayout.Height(28))) Regenerate();
             if (GUILayout.Button("🎯 Reset Camera [F]", GUILayout.Height(24))) cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
@@ -263,16 +281,19 @@ namespace AgesOfConflict
             showContextMenu = true;
         }
 
-        private void StartWar()
+        private void StartWar(float percentage)
         {
             if (selectedNation == null || contextNation == null || selectedNation == contextNation) return;
             foreach (War war in wars)
                 if ((war.attackerId == selectedNation.id && war.defenderId == contextNation.id) ||
                     (war.attackerId == contextNation.id && war.defenderId == selectedNation.id))
                 { commandMessage = $"{selectedNation.name} is already at war with {contextNation.name}."; return; }
-            War newWar = new War { attackerId = selectedNation.id, defenderId = contextNation.id };
+            float committedForce = selectedNation.population * percentage / 100f;
+            if (committedForce < 1f) { commandMessage = "Commit at least one person to attack."; return; }
+            War newWar = new War { attackerId = selectedNation.id, defenderId = contextNation.id, attackingPercentage = percentage };
             wars.Add(newWar);
             RefreshWarFlags(newWar);
+            RefreshWarBorderHighlight();
             commandMessage = HaveSharedBorder(selectedNation.id, contextNation.id)
                 ? $"{selectedNation.name} attacked {contextNation.name}."
                 : $"War declared. The front will form when the nations share a border.";
@@ -280,28 +301,85 @@ namespace AgesOfConflict
 
         private void AdvanceWars(float deltaTime)
         {
+            bool warsChanged = false;
             for (int i = wars.Count - 1; i >= 0; i--)
             {
                 War war = wars[i];
                 // A declared war remains active while expanding nations are still separated.
                 // Hide its old formation until a new shared border exists.
                 if (!HaveSharedBorder(war.attackerId, war.defenderId)) { war.flags.Clear(); continue; }
+                bool hadVisibleFront = war.flags.Count > 0;
                 RefreshWarFlags(war);
-                float attackerStrength = nationSimulator.ComputeStrength(worldGenerator.Nations[war.attackerId]);
-                float defenderStrength = nationSimulator.ComputeStrength(worldGenerator.Nations[war.defenderId]);
-                float advantage = attackerStrength - defenderStrength;
-                if (advantage <= 0f) continue;
-                float speed = Mathf.Min(maximumWarAdvanceSpeed, maximumWarAdvanceSpeed * advantage / Mathf.Max(1f, strengthDeltaForMaximumSpeed));
+                if (!hadVisibleFront) RefreshWarBorderHighlight();
+                ApplyWarCasualties(war, deltaTime);
+                float attackingForce = GetAttackingForce(war);
+                if (attackingForce < 1f) { wars.RemoveAt(i); warsChanged = true; continue; }
+                float defendingForce = GetDefendingForce(war);
+                // An assault only advances with at least a 50% force advantage.
+                if (attackingForce < defendingForce * 1.5f) continue;
+                float advantage = attackingForce / Mathf.Max(1f, defendingForce) - 1.5f;
+                float speed = Mathf.Min(maximumWarAdvanceSpeed, maximumWarAdvanceSpeed * advantage);
                 war.captureProgress += speed * deltaTime;
                 int cellsToCapture = Mathf.FloorToInt(war.captureProgress);
                 if (cellsToCapture <= 0) continue;
                 war.captureProgress -= cellsToCapture;
                 List<int> border = FindDefenderBorderCells(war.attackerId, war.defenderId);
-                if (border.Count == 0) { wars.RemoveAt(i); continue; }
+                if (border.Count == 0) { wars.RemoveAt(i); warsChanged = true; continue; }
                 Shuffle(border);
                 if (border.Count > cellsToCapture) border.RemoveRange(cellsToCapture, border.Count - cellsToCapture);
                 nationSimulator.CaptureCells(border, war.attackerId);
             }
+            if (warsChanged) RefreshWarBorderHighlight();
+        }
+
+        private void RefreshWarBorderHighlight()
+        {
+            if (worldRenderer == null) return;
+            List<Vector2Int> nationPairs = new List<Vector2Int>(wars.Count);
+            foreach (War war in wars)
+                nationPairs.Add(new Vector2Int(war.attackerId, war.defenderId));
+            worldRenderer.SetActiveWarBorders(nationPairs);
+        }
+
+        private void ApplyWarCasualties(War war, float deltaTime)
+        {
+            war.casualtyProgress += deltaTime;
+            while (war.casualtyProgress >= 1f)
+            {
+                war.casualtyProgress -= 1f;
+                float attackingForce = GetAttackingForce(war);
+                float attackerLosses = attackingForce * .01f;
+                // Defenders lose one third of the attacker's *casualties*, not one third
+                // of the entire attacking force each second.
+                float defenderLosses = attackerLosses / 3f;
+                Nation attacker = worldGenerator.Nations[war.attackerId];
+                Nation defender = worldGenerator.Nations[war.defenderId];
+                attackerLosses = Mathf.Min(attackerLosses, attackingForce, attacker.population);
+                defenderLosses = Mathf.Min(defenderLosses, GetDefendingForce(war), defender.population);
+                attacker.population -= attackerLosses;
+                defender.population -= defenderLosses;
+            }
+        }
+
+        // The committed percentage is retained for the whole war, so its force follows
+        // the nation's current population (including population growth and casualties).
+        private float GetAttackingForce(War war)
+        {
+            Nation attacker = worldGenerator.Nations[war.attackerId];
+            return Mathf.Min(attacker.population, attacker.population * war.attackingPercentage / 100f);
+        }
+
+        private float GetDefendingForce(War war)
+        {
+            Nation defender = worldGenerator.Nations[war.defenderId];
+            float availableDefenders = defender.population;
+            foreach (War outgoingWar in wars)
+                if (outgoingWar.attackerId == defender.id) availableDefenders -= GetAttackingForce(outgoingWar);
+            availableDefenders = Mathf.Max(0f, availableDefenders);
+            float totalIncomingForce = 0f;
+            foreach (War incomingWar in wars)
+                if (incomingWar.defenderId == defender.id) totalIncomingForce += GetAttackingForce(incomingWar);
+            return totalIncomingForce <= 0f ? 0f : availableDefenders * GetAttackingForce(war) / totalIncomingForce;
         }
 
         private bool HaveSharedBorder(int first, int second) => FindDefenderBorderCells(first, second).Count > 0;
@@ -341,15 +419,14 @@ namespace AgesOfConflict
             {
                 int index = border[i];
                 int x = index % worldGenerator.width, y = index / worldGenerator.width;
-                Vector2 defender = new Vector2(x + .5f, y + .5f);
                 for (int d = 0; d < 4; d++)
                 {
                     int nx = x + dx[d], ny = y + dy[d];
                     if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height || worldGenerator.Grid[ny * worldGenerator.width + nx].nationId != war.attackerId) continue;
-                    Vector2 attacker = new Vector2(nx + .5f, ny + .5f);
-                    Vector2 towardDefender = (defender - attacker).normalized;
-                    targets.Add(new FlagTarget { nationId = war.attackerId, position = attacker - towardDefender * 1.5f, color = worldGenerator.Nations[war.attackerId].color });
-                    targets.Add(new FlagTarget { nationId = war.defenderId, position = defender + towardDefender * 1.5f, color = worldGenerator.Nations[war.defenderId].color });
+                    // Place each flag just behind its side of the front, rather than
+                    // on the black border pixels themselves.
+                    targets.Add(new FlagTarget { nationId = war.attackerId, position = GetSafeBorderInset(nx, ny, -dx[d], -dy[d], war.attackerId, 2), color = worldGenerator.Nations[war.attackerId].color });
+                    targets.Add(new FlagTarget { nationId = war.defenderId, position = GetSafeBorderInset(x, y, dx[d], dy[d], war.defenderId, 2), color = worldGenerator.Nations[war.defenderId].color });
                     break;
                 }
             }
@@ -369,14 +446,16 @@ namespace AgesOfConflict
                 }
                 if (closest < 0)
                 {
-                    war.flags.Add(new WarFlag { nationId = target.nationId, position = target.position, targetPosition = target.position, color = target.color });
+                    war.flags.Add(new WarFlag { nationId = target.nationId, position = target.position, color = target.color });
                     System.Array.Resize(ref used, war.flags.Count);
                     used[war.flags.Count - 1] = true;
                 }
                 else
                 {
                     WarFlag flag = war.flags[closest];
-                    flag.targetPosition = target.position;
+                    // Flags are markers, not units. Teleport them to a new border
+                    // position rather than making them travel through either nation.
+                    flag.position = target.position;
                     flag.color = target.color;
                     used[closest] = true;
                 }
@@ -390,8 +469,73 @@ namespace AgesOfConflict
             if (mainCam == null) return;
             if (warMarkerTexture == null) warMarkerTexture = CreateWarMarkerTexture();
             foreach (War war in wars)
+            {
                 foreach (WarFlag flag in war.flags)
                     DrawWarFlag(flag.position, flag.color);
+
+                // Labels derive directly from the current border, never from a flag.
+                if (TryGetWarLabelPositions(war, out Vector2 attackerLabel, out Vector2 defenderLabel))
+                {
+                    DrawWarForceLabel(attackerLabel, GetAttackingForce(war), worldGenerator.Nations[war.attackerId].color);
+                    DrawWarForceLabel(defenderLabel, GetDefendingForce(war), worldGenerator.Nations[war.defenderId].color);
+                }
+            }
+        }
+
+        private bool TryGetWarLabelPositions(War war, out Vector2 attackerLabel, out Vector2 defenderLabel)
+        {
+            attackerLabel = Vector2.zero;
+            defenderLabel = Vector2.zero;
+            List<int> border = FindDefenderBorderCells(war.attackerId, war.defenderId);
+            if (border.Count == 0) return false;
+
+            int index = border[border.Count / 2];
+            int x = index % worldGenerator.width;
+            int y = index / worldGenerator.width;
+            int[] dx = { 0, 0, 1, -1 };
+            int[] dy = { 1, -1, 0, 0 };
+            for (int direction = 0; direction < 4; direction++)
+            {
+                int nx = x + dx[direction], ny = y + dy[direction];
+                if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height
+                    || worldGenerator.Grid[ny * worldGenerator.width + nx].nationId != war.attackerId) continue;
+
+                // Keep the number near the middle of the front, but far enough inside
+                // its side that the two force labels and the border flags do not overlap.
+                // It is intentionally separate from the flags, which stay on the border.
+                attackerLabel = GetSafeBorderInset(nx, ny, -dx[direction], -dy[direction], war.attackerId, 3);
+                defenderLabel = GetSafeBorderInset(x, y, dx[direction], dy[direction], war.defenderId, 3);
+                return true;
+            }
+            return false;
+        }
+
+        // Move inward only as far as requested, stopping before leaving the owner.
+        private Vector2 GetSafeBorderInset(int startX, int startY, int stepX, int stepY, int nationId, int cellsInward)
+        {
+            int x = startX, y = startY;
+            for (int distance = 0; distance < cellsInward; distance++)
+            {
+                int nextX = x + stepX, nextY = y + stepY;
+                if (nextX < 0 || nextX >= worldGenerator.width || nextY < 0 || nextY >= worldGenerator.height
+                    || worldGenerator.Grid[nextY * worldGenerator.width + nextX].nationId != nationId) break;
+                x = nextX;
+                y = nextY;
+            }
+            return new Vector2(x + .5f, y + .5f);
+        }
+
+        private void DrawWarForceLabel(Vector2 worldPosition, float force, Color color)
+        {
+            Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(worldPosition.x, worldPosition.y, 0f));
+            if (screen.z < 0) return;
+            Color previous = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, .75f);
+            Rect label = new Rect(screen.x - 23, Screen.height - screen.y - 31, 46, 18);
+            GUI.Box(label, string.Empty);
+            GUI.color = color;
+            GUI.Label(label, $"{force:F0}", new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold });
+            GUI.color = previous;
         }
 
         private void DrawWarFlag(Vector2 position, Color color)
@@ -427,8 +571,16 @@ namespace AgesOfConflict
                 GUILayout.BeginArea(new Rect(warX + 10, warY + 25, warWidth - 20, warHeight - 30));
                 float strength = nationSimulator.ComputeStrength(contextNation);
                 GUILayout.Label($"Attack <b>{contextNation.name}</b>?");
-                GUILayout.Label($"Their current strength: {strength:F0}");
-                if (GUILayout.Button("Attack", GUILayout.Height(30))) { StartWar(); showContextMenu = false; }
+                GUILayout.Label($"Population: {selectedNation.population:F0} | Enemy: {contextNation.population:F0}");
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Commit population:", GUILayout.Width(125));
+                attackPercentage = GUILayout.TextField(attackPercentage, 3, GUILayout.Width(42));
+                GUILayout.Label("%");
+                GUILayout.EndHorizontal();
+                bool validPercent = float.TryParse(attackPercentage, out float parsedPercent) && parsedPercent > 0f && parsedPercent <= 100f;
+                GUI.enabled = validPercent;
+                if (GUILayout.Button("Attack", GUILayout.Height(30))) { StartWar(parsedPercent); showContextMenu = false; }
+                GUI.enabled = true;
                 if (GUILayout.Button("Cancel")) showContextMenu = false;
                 GUILayout.EndArea(); return;
             }
@@ -459,7 +611,7 @@ namespace AgesOfConflict
             Rect rect = new Rect(Screen.width - 285, 15, 270, 210); GUI.Box(rect, selectedNation != null ? "Controlled Nation" : "State Overview");
             GUILayout.BeginArea(new Rect(rect.x + 10, rect.y + 30, rect.width - 20, rect.height - 40));
             GUILayout.Label($"<size=15><b>■ {nation.name}</b></size>"); GUILayout.Label($"Territory: {nation.territorySize:N0} pixels"); GUILayout.Label($"Cities: {nation.cities.Count}");
-            GUILayout.Label($"Treasury: <color=#FFD700>{nation.treasury:F1} gold</color>"); GUILayout.Label($"Income: +{nation.incomePerSec:F1} / sec");
+            GUILayout.Label($"Treasury: <color=#FFD700>{nation.treasury:F1} gold</color>"); GUILayout.Label($"Population: {nation.population:F0}"); GUILayout.Label($"Income: +{nation.incomePerSec:F1} / sec");
             foreach (City city in nation.cities) GUILayout.Label($"{(city.isCapital ? "Capital" : "City")}: {city.name}");
             GUILayout.EndArea();
             int leaderboardTop = selectedNation == null ? 240 : DrawWarsPanel(240);
@@ -483,10 +635,12 @@ namespace AgesOfConflict
                 int opponentId = war.attackerId == selectedNation.id ? war.defenderId : war.attackerId;
                 Nation opponent = worldGenerator.Nations[opponentId];
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(opponent.name, GUILayout.Width(145));
+                float force = war.attackerId == selectedNation.id ? GetAttackingForce(war) : GetDefendingForce(war);
+                GUILayout.Label($"{opponent.name} ({force:F0})", GUILayout.Width(145));
                 if (GUILayout.Button("Cancel war", GUILayout.Height(24)))
                 {
                     wars.Remove(war);
+                    RefreshWarBorderHighlight();
                     commandMessage = $"Peace declared with {opponent.name}.";
                     break;
                 }

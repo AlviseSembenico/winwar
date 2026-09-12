@@ -11,6 +11,8 @@ namespace AgesOfConflict
         public Color32 shallowOceanColor = new Color32(40, 75, 99, 255);
         public Color32 unclaimedLandColor = new Color32(200, 196, 183, 255);
         public Color32 borderColor = new Color32(10, 10, 10, 255);
+        [Tooltip("Border colour for two nations currently at war.")]
+        public Color32 activeWarBorderColor = new Color32(220, 40, 40, 255);
 
         [Header("City Logo Colors")]
         public Color32 cityDarkRing = new Color32(20, 20, 20, 255);
@@ -37,6 +39,7 @@ namespace AgesOfConflict
         private int renderedHeight;
         private int selectedNationId = -1;
         private City selectedCity;
+        private readonly HashSet<ulong> activeWarBorders = new HashSet<ulong>();
 
         public int SelectedNationId => selectedNationId;
 
@@ -138,7 +141,7 @@ namespace AgesOfConflict
                     {
                         if (showBorders && IsBorderCell(grid, x, y, width, height, grid[i].nationId))
                         {
-                            pixelBuffer[i] = borderColor;
+                            pixelBuffer[i] = GetBorderColor(grid, x, y, width, height, grid[i].nationId);
                         }
                         else
                         {
@@ -295,6 +298,38 @@ namespace AgesOfConflict
                 if (grid[ny * width + nx].nationId != ownerId) return true;
             }
             return false;
+        }
+
+        public void SetActiveWarBorders(IEnumerable<Vector2Int> nationPairs)
+        {
+            activeWarBorders.Clear();
+            foreach (Vector2Int pair in nationPairs)
+                activeWarBorders.Add(GetNationPairKey(pair.x, pair.y));
+
+            if (renderedGrid != null && renderedNations != null)
+                RenderWorld(renderedGrid, renderedNations, renderedWidth, renderedHeight);
+        }
+
+        public Color32 GetBorderColor(Cell[] grid, int x, int y, int width, int height, int ownerId)
+        {
+            int[] dx = { 0, 0, 1, -1 };
+            int[] dy = { 1, -1, 0, 0 };
+            for (int i = 0; i < 4; i++)
+            {
+                int nx = x + dx[i], ny = y + dy[i];
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                int neighborId = grid[ny * width + nx].nationId;
+                if (neighborId >= 0 && neighborId != ownerId && activeWarBorders.Contains(GetNationPairKey(ownerId, neighborId)))
+                    return activeWarBorderColor;
+            }
+            return borderColor;
+        }
+
+        private static ulong GetNationPairKey(int firstId, int secondId)
+        {
+            uint low = (uint)Mathf.Min(firstId, secondId);
+            uint high = (uint)Mathf.Max(firstId, secondId);
+            return ((ulong)high << 32) | low;
         }
 
         public void SetPixelColor(int index, Color32 color)
