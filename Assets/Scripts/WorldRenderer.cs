@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace AgesOfConflict
@@ -178,6 +178,30 @@ namespace AgesOfConflict
                 }
             }
 
+            // Dilate war borders: collect red pixels, then paint adjacent black borders red.
+            // This is O(warBorderCells * 4) — far cheaper than a per-pixel radius check.
+            if (activeWarBorders.Count > 0 && showBorders)
+            {
+                List<int> warPixels = new List<int>();
+                for (int i = 0; i < pixelBuffer.Length; i++)
+                    if (ColorsEqual(pixelBuffer[i], activeWarBorderColor)) warPixels.Add(i);
+
+                int[] ddx = { 0, 0, 1, -1 };
+                int[] ddy = { 1, -1, 0, 0 };
+                foreach (int idx in warPixels)
+                {
+                    int px = idx % width, py = idx / width;
+                    for (int d = 0; d < 4; d++)
+                    {
+                        int nx = px + ddx[d], ny = py + ddy[d];
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                        int ni = ny * width + nx;
+                        if (ColorsEqual(pixelBuffer[ni], borderColor))
+                            pixelBuffer[ni] = activeWarBorderColor;
+                    }
+                }
+            }
+
             ApplyTextureChanges();
         }
 
@@ -353,6 +377,11 @@ namespace AgesOfConflict
         {
             if (worldTexture != null) Destroy(worldTexture);
             if (displayMaterial != null) Destroy(displayMaterial);
+        }
+
+        private static bool ColorsEqual(Color32 a, Color32 b)
+        {
+            return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
         }
     }
 }

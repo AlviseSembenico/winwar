@@ -51,7 +51,6 @@ namespace AgesOfConflict
         private string commandMessage;
         private string attackPercentage = "10";
         private readonly List<War> wars = new List<War>();
-        private Texture2D warMarkerTexture;
 
         private class War
         {
@@ -467,12 +466,8 @@ namespace AgesOfConflict
         private void DrawWarFronts()
         {
             if (mainCam == null) return;
-            if (warMarkerTexture == null) warMarkerTexture = CreateWarMarkerTexture();
             foreach (War war in wars)
             {
-                foreach (WarFlag flag in war.flags)
-                    DrawWarFlag(flag.position, flag.color);
-
                 // Labels derive directly from the current border, never from a flag.
                 if (TryGetWarLabelPositions(war, out Vector2 attackerLabel, out Vector2 defenderLabel))
                 {
@@ -500,11 +495,11 @@ namespace AgesOfConflict
                 if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height
                     || worldGenerator.Grid[ny * worldGenerator.width + nx].nationId != war.attackerId) continue;
 
-                // Keep the number near the middle of the front, but far enough inside
-                // its side that the two force labels and the border flags do not overlap.
-                // It is intentionally separate from the flags, which stay on the border.
-                attackerLabel = GetSafeBorderInset(nx, ny, -dx[direction], -dy[direction], war.attackerId, 3);
-                defenderLabel = GetSafeBorderInset(x, y, dx[direction], dy[direction], war.defenderId, 3);
+                // Push each label away from the border, deeper into its own territory.
+                // (dx, dy) points from defender toward attacker, so attacker steps further
+                // in that direction while defender steps in the opposite direction.
+                attackerLabel = GetSafeBorderInset(nx, ny, dx[direction], dy[direction], war.attackerId, 8);
+                defenderLabel = GetSafeBorderInset(x, y, -dx[direction], -dy[direction], war.defenderId, 8);
                 return true;
             }
             return false;
@@ -525,40 +520,36 @@ namespace AgesOfConflict
             return new Vector2(x + .5f, y + .5f);
         }
 
+        private GUIStyle forceLabelStyle;
         private void DrawWarForceLabel(Vector2 worldPosition, float force, Color color)
         {
             Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(worldPosition.x, worldPosition.y, 0f));
             if (screen.z < 0) return;
-            Color previous = GUI.color;
-            GUI.color = new Color(0f, 0f, 0f, .75f);
-            Rect label = new Rect(screen.x - 23, Screen.height - screen.y - 31, 46, 18);
-            GUI.Box(label, string.Empty);
-            GUI.color = color;
-            GUI.Label(label, $"{force:F0}", new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold });
-            GUI.color = previous;
-        }
 
-        private void DrawWarFlag(Vector2 position, Color color)
-        {
-            Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(position.x, position.y, 0f));
-            if (screen.z < 0 || screen.x < -20 || screen.x > Screen.width + 20 || screen.y < -20 || screen.y > Screen.height + 20) return;
-            Color previous = GUI.color;
-            GUI.color = color;
-            GUI.DrawTexture(new Rect(screen.x - 11, Screen.height - screen.y - 11, 22, 22), warMarkerTexture);
-            GUI.color = previous;
-        }
-
-        private static Texture2D CreateWarMarkerTexture()
-        {
-            Texture2D texture = new Texture2D(12, 12, TextureFormat.RGBA32, false);
-            Color32[] pixels = new Color32[144];
-            for (int y = 1; y < 11; y++) for (int x = 1; x < 11; x++)
+            if (forceLabelStyle == null)
             {
-                // A square field with a transparent X makes the active front visible at any zoom.
-                if (x == y || x == 11 - y) pixels[y * 12 + x] = new Color32(20, 20, 20, 255);
-                else pixels[y * 12 + x] = Color.white;
+                forceLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontStyle = FontStyle.Bold,
+                    fontSize = 14
+                };
             }
-            texture.SetPixels32(pixels); texture.Apply(false); return texture;
+
+            string text = $"{force:F0}";
+            Vector2 size = forceLabelStyle.CalcSize(new GUIContent(text));
+            float padX = 8f, padY = 4f;
+            float w = size.x + padX * 2;
+            float h = size.y + padY * 2;
+            Rect bg = new Rect(screen.x - w / 2f, Screen.height - screen.y - h / 2f, w, h);
+
+            Color previous = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, 0.8f);
+            GUI.Box(bg, string.Empty);
+            GUI.color = Color.white;
+            forceLabelStyle.normal.textColor = Color.white;
+            GUI.Label(bg, text, forceLabelStyle);
+            GUI.color = previous;
         }
 
         private void DrawCityContextMenu()
