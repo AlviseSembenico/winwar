@@ -22,7 +22,7 @@ namespace AgesOfConflict
         [Tooltip("Treasury-strength advantage required to reach the maximum advance speed.")]
         public float strengthDeltaForMaximumSpeed = 20f;
         [Tooltip("Number of flag pairs per map cell along an active border.")]
-        [Range(0.05f, 1f)] public float warFlagsPerBorderCell = 0.5f;
+        [Range(0.02f, 0.12f)] public float warFlagsPerBorderCell = 0.08f;
 
         [Header("Simulation State")]
         public bool isRunning = true;
@@ -56,9 +56,18 @@ namespace AgesOfConflict
             public readonly List<WarFlag> flags = new List<WarFlag>();
         }
 
-        // Visual markers use world-space offsets inside their respective territories.
+        // Flags are persistent objects: their positions animate independently toward a new front.
         private class WarFlag
         {
+            public int nationId;
+            public Vector2 position;
+            public Vector2 targetPosition;
+            public Color color;
+        }
+
+        private struct FlagTarget
+        {
+            public int nationId;
             public Vector2 position;
             public Color color;
         }
@@ -164,13 +173,21 @@ namespace AgesOfConflict
                     AdvanceWars(tickInterval);
                 }
             }
+            UpdateWarFlagPositions(Time.deltaTime * speedMultiplier);
+        }
+
+        private void UpdateWarFlagPositions(float deltaTime)
+        {
+            foreach (War war in wars)
+                foreach (WarFlag flag in war.flags)
+                    flag.position = Vector2.MoveTowards(flag.position, flag.targetPosition, 8f * deltaTime);
         }
 
         private void HandleHotkeys()
         {
             if (Input.GetKeyDown(KeyCode.Escape)) { selectedCity = null; showContextMenu = false; worldRenderer?.SetSelectedCity(null); }
             if (Input.GetKeyDown(KeyCode.Space)) isRunning = !isRunning;
-            if (Input.GetKeyDown(KeyCode.S) && !isRunning) nationSimulator?.StepSimulation(tickInterval);
+            if (Input.GetKeyDown(KeyCode.S) && !isRunning) { nationSimulator?.StepSimulation(tickInterval); AdvanceWars(tickInterval); }
             if (Input.GetKeyDown(KeyCode.R)) Regenerate();
             if (Input.GetKeyDown(KeyCode.F)) cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
             if (Input.GetKeyDown(KeyCode.Alpha1)) speedMultiplier = 1;
@@ -267,7 +284,8 @@ namespace AgesOfConflict
             {
                 War war = wars[i];
                 // A declared war remains active while expanding nations are still separated.
-                if (!HaveSharedBorder(war.attackerId, war.defenderId)) continue;
+                // Hide its old formation until a new shared border exists.
+                if (!HaveSharedBorder(war.attackerId, war.defenderId)) { war.flags.Clear(); continue; }
                 RefreshWarFlags(war);
                 float attackerStrength = nationSimulator.ComputeStrength(worldGenerator.Nations[war.attackerId]);
                 float defenderStrength = nationSimulator.ComputeStrength(worldGenerator.Nations[war.defenderId]);
@@ -314,34 +332,57 @@ namespace AgesOfConflict
         private void RefreshWarFlags(War war)
         {
             List<int> border = FindDefenderBorderCells(war.attackerId, war.defenderId);
-            // Walk the border at a fixed interval. Do not resample a fixed total across
-            // the whole front: that would make every marker jump whenever it changes length.
-            int borderStride = Mathf.Max(1, Mathf.RoundToInt(1f / warFlagsPerBorderCell));
-            int pairCount = (border.Count + borderStride - 1) / borderStride;
-            while (war.flags.Count < pairCount * 2) war.flags.Add(new WarFlag());
-            if (war.flags.Count > pairCount * 2) war.flags.RemoveRange(pairCount * 2, war.flags.Count - pairCount * 2);
+            // Clamp old serialized inspector values from earlier iterations as well.
+            float flagDensity = Mathf.Clamp(warFlagsPerBorderCell, 0.02f, 0.12f);
+            int borderStride = Mathf.Max(1, Mathf.RoundToInt(1f / flagDensity));
+            List<FlagTarget> targets = new List<FlagTarget>();
             int[] dx = { 0, 0, 1, -1 }, dy = { 1, -1, 0, 0 };
-            for (int i = 0; i < pairCount; i++)
+            for (int i = 0; i < border.Count; i += borderStride)
             {
-                int index = border[Mathf.Min(i * borderStride, border.Count - 1)];
+                int index = border[i];
                 int x = index % worldGenerator.width, y = index / worldGenerator.width;
                 Vector2 defender = new Vector2(x + .5f, y + .5f);
-                Vector2 attacker = defender;
                 for (int d = 0; d < 4; d++)
                 {
                     int nx = x + dx[d], ny = y + dy[d];
-                    if (nx >= 0 && nx < worldGenerator.width && ny >= 0 && ny < worldGenerator.height &&
-                        worldGenerator.Grid[ny * worldGenerator.width + nx].nationId == war.attackerId)
-                    { attacker = new Vector2(nx + .5f, ny + .5f); break; }
+                    if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height || worldGenerator.Grid[ny * worldGenerator.width + nx].nationId != war.attackerId) continue;
+                    Vector2 attacker = new Vector2(nx + .5f, ny + .5f);
+                    Vector2 towardDefender = (defender - attacker).normalized;
+                    targets.Add(new FlagTarget { nationId = war.attackerId, position = attacker - towardDefender * 1.5f, color = worldGenerator.Nations[war.attackerId].color });
+                    targets.Add(new FlagTarget { nationId = war.defenderId, position = defender + towardDefender * 1.5f, color = worldGenerator.Nations[war.defenderId].color });
+                    break;
                 }
-                // Keep each marker slightly inside its owner's territory, beside—not on—the border.
-                Vector2 towardDefender = (defender - attacker).normalized;
-                WarFlag attackerFlag = war.flags[i * 2], defenderFlag = war.flags[i * 2 + 1];
-                attackerFlag.position = attacker - towardDefender * 1.5f;
-                defenderFlag.position = defender + towardDefender * 1.5f;
-                attackerFlag.color = worldGenerator.Nations[war.attackerId].color;
-                defenderFlag.color = worldGenerator.Nations[war.defenderId].color;
             }
+
+            // Match every new front position to the nearest existing same-side flag.
+            // This preserves flag identity and prevents reshuffling/flickering on border updates.
+            bool[] used = new bool[war.flags.Count];
+            foreach (FlagTarget target in targets)
+            {
+                int closest = -1;
+                float closestDistance = float.MaxValue;
+                for (int i = 0; i < war.flags.Count; i++)
+                {
+                    if (used[i] || war.flags[i].nationId != target.nationId) continue;
+                    float distance = (war.flags[i].position - target.position).sqrMagnitude;
+                    if (distance < closestDistance) { closest = i; closestDistance = distance; }
+                }
+                if (closest < 0)
+                {
+                    war.flags.Add(new WarFlag { nationId = target.nationId, position = target.position, targetPosition = target.position, color = target.color });
+                    System.Array.Resize(ref used, war.flags.Count);
+                    used[war.flags.Count - 1] = true;
+                }
+                else
+                {
+                    WarFlag flag = war.flags[closest];
+                    flag.targetPosition = target.position;
+                    flag.color = target.color;
+                    used[closest] = true;
+                }
+            }
+            for (int i = war.flags.Count - 1; i >= 0; i--)
+                if (!used[i]) war.flags.RemoveAt(i);
         }
 
         private void DrawWarFronts()
