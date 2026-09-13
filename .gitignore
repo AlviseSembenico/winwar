@@ -59,3 +59,5 @@ Thumbs.db
 *.sublime-project
 .vscode/
 .history/
+*.png
+*.jpg
