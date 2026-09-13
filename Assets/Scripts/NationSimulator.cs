@@ -70,13 +70,18 @@ namespace AgesOfConflict
                 nations[n].upkeepPerSec = 0f;
             }
 
-            BuildInitialFrontiers();
+            BuildBorders();
+            BuildFrontiers();
         }
 
-        private void BuildInitialFrontiers()
+        private void BuildBorders()
         {
             for (int n = 0; n < nations.Count; n++)
-                nations[n].frontier.Clear();
+            {
+                foreach (int border in nations[n].border)
+                    UpdateClaimedCellRendering(nations[n], border, CellRenderKind.Territory);
+                nations[n].border.Clear();
+            }
 
             for (int y = 0; y < height; y++)
             {
@@ -84,37 +89,48 @@ namespace AgesOfConflict
                 for (int x = 0; x < width; x++)
                 {
                     int idx = rowOffset + x;
-                    if (grid[idx].HasOwner && grid[idx].IsLand
-                        && HasUnclaimedLandNeighbor(x, y))
-                    {
-                        int ownerId = grid[idx].nationId;
-                        if (ownerId >= 0 && ownerId < nations.Count)
-                            nations[ownerId].frontier.Add(idx);
-                    }
+                    if (!grid[idx].HasOwner || !grid[idx].IsLand)
+                        continue;
+
+                    int ownerId = grid[idx].nationId;
+
+                    if (grid.IsBorder(x, y, width, height))
+                        nations[ownerId].border.Add(idx);
                 }
             }
+
         }
 
-        private bool HasUnclaimedLandNeighbor(int x, int y)
+        private void BuildFrontiers()
         {
-            for (int i = 0; i < 4; i++)
+            for (int n = 0; n < nations.Count; n++)
             {
-                int nx = x + dx[i];
-                int ny = y + dy[i];
-                if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                foreach (int frontier in nations[n].frontier)
+                    UpdateClaimedCellRendering(nations[n], frontier, CellRenderKind.Territory);
+                nations[n].frontier.Clear();
+
+            }
+
+            for (int y = 0; y < height; y++)
+            {
+                int rowOffset = y * width;
+                for (int x = 0; x < width; x++)
                 {
-                    Cell neighbor = grid[ny * width + nx];
-                    if (neighbor.IsLand && !neighbor.HasOwner)
-                        return true;
+                    int idx = rowOffset + x;
+                    if (!grid[idx].HasOwner || !grid[idx].IsLand)
+                        continue;
+
+                    int ownerId = grid[idx].nationId;
+                    if (grid.IsFrontier(x, y, width, height))
+                        nations[ownerId].frontier.Add(idx);
                 }
             }
-            return false;
         }
 
         public void expand(Nation nation)
         {
             HashSet<int> candidates = new HashSet<int>();
-            foreach (int cell in nation.frontier)
+            foreach (int cell in nation.border)
             {
                 int cellX = cell % width;
                 int cellY = cell / width;
@@ -132,15 +148,13 @@ namespace AgesOfConflict
                 }
 
             }
-            for (int i = nation.frontier.Count - 1; i >= 0; i--)
-                RemoveFrontierCell(nation, i);
             foreach (int candidate in candidates)
             {
                 grid[candidate].nationId = (short)nation.id;
                 nation.territorySize++;
                 ClaimedLandCells++;
                 nation.frontier.Add(candidate);
-                UpdateClaimedCellRendering(nation, candidate, true);
+                UpdateClaimedCellRendering(nation, candidate, CellRenderKind.Territory);
             }
         }
 
@@ -186,6 +200,10 @@ namespace AgesOfConflict
                     expand(nation);
                 }
             }
+            BuildBorders();
+            BuildFrontiers();
+            foreach (Nation nation in nations)
+                RenderNation(nation);
 
             if (worldRenderer != null)
                 worldRenderer.ApplyTextureChanges();
@@ -193,27 +211,50 @@ namespace AgesOfConflict
             return anyExpanded;
         }
 
+        private void RenderNation(Nation nation)
+        {
+            foreach (int border in nation.border)
+                UpdateClaimedCellRendering(nation, border, CellRenderKind.Border);
+            foreach (int frontier in nation.frontier)
+                UpdateClaimedCellRendering(nation, frontier, CellRenderKind.Frontier);
+        }
+
+
         private void RemoveFrontierCell(Nation nation, int index)
         {
             int last = nation.frontier.Count - 1;
             int cell = nation.frontier[index];
             nation.frontier[index] = nation.frontier[last];
             nation.frontier.RemoveAt(last);
-            UpdateClaimedCellRendering(nation, cell, false);
+            UpdateClaimedCellRendering(nation, cell, CellRenderKind.Territory);
         }
 
-        private void UpdateClaimedCellRendering(Nation nation, int cellIndex, bool isBorder)
+
+
+        private void UpdateClaimedCellRendering(Nation nation, int cellIndex, CellRenderKind kind)
         {
             if (worldRenderer == null)
                 return;
 
             int x = cellIndex % width;
             int y = cellIndex / width;
-            worldRenderer.SetPixelColor(
-                cellIndex,
-                worldRenderer.showBorders && isBorder
-                    ? worldRenderer.GetBorderColor(grid, x, y, width, height, nation.id)
-                    : worldRenderer.GetDisplayColor(nation.id, nation.color));
+            if (!worldRenderer.showBorders)
+                kind = CellRenderKind.Territory;
+
+            Color32 color;
+            switch (kind)
+            {
+                case CellRenderKind.Frontier:
+                    color = worldRenderer.GetBorderColor(grid, x, y, width, height, nation.id);
+                    break;
+                case CellRenderKind.Border:
+                    color = worldRenderer.borderColor;
+                    break;
+                default:
+                    color = worldRenderer.GetDisplayColor(nation.id, nation.color);
+                    break;
+            }
+            worldRenderer.SetPixelColor(cellIndex, color);
         }
 
         /// <summary>
@@ -252,12 +293,11 @@ namespace AgesOfConflict
                 }
             }
             if (captured == 0) return 0;
-            BuildInitialFrontiers();
             foreach (int index in refresh)
             {
                 Cell cell = grid[index];
                 if (cell.IsLand && cell.HasOwner && cell.nationId >= 0 && cell.nationId < nations.Count)
-                    UpdateClaimedCellRendering(nations[cell.nationId], index, true);
+                    UpdateClaimedCellRendering(nations[cell.nationId], index, CellRenderKind.Territory);
             }
             worldRenderer?.ApplyTextureChanges();
             return captured;

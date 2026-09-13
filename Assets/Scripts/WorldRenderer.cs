@@ -139,7 +139,7 @@ namespace AgesOfConflict
 
                     if (grid[i].HasOwner && nationColorLookup.TryGetValue(grid[i].nationId, out Color32 nColor))
                     {
-                        if (showBorders && IsBorderCell(grid, x, y, width, height, grid[i].nationId))
+                        if (showBorders && grid.IsBorder(x, y, width, height))
                         {
                             pixelBuffer[i] = GetBorderColor(grid, x, y, width, height, grid[i].nationId);
                         }
@@ -306,22 +306,6 @@ namespace AgesOfConflict
                     }
                 }
             }
-        }
-
-        public static bool IsBorderCell(Cell[] grid, int x, int y, int width, int height, int ownerId)
-        {
-            int[] dx = { 0, 0, 1, -1 };
-            int[] dy = { 1, -1, 0, 0 };
-
-            for (int i = 0; i < 4; i++)
-            {
-                int nx = x + dx[i];
-                int ny = y + dy[i];
-
-                if (nx < 0 || nx >= width || ny < 0 || ny >= height) return true;
-                if (grid[ny * width + nx].nationId != ownerId) return true;
-            }
-            return false;
         }
 
         public void SetActiveWarBorders(IEnumerable<Vector2Int> nationPairs)
