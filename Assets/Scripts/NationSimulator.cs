@@ -34,7 +34,7 @@ namespace AgesOfConflict
         private int width;
         private int height;
         private WorldRenderer worldRenderer;
-        private int ticksSinceExpansion;
+        private int expansionTicks;
 
         private static readonly int[] dx = { 0, 0, 1, -1 };
         private static readonly int[] dy = { 1, -1, 0, 0 };
@@ -49,7 +49,7 @@ namespace AgesOfConflict
 
             TotalLandCells = 0;
             ClaimedLandCells = 0;
-            ticksSinceExpansion = 0;
+            expansionTicks = 0;
 
             for (int i = 0; i < grid.Length; i++)
             {
@@ -153,7 +153,7 @@ namespace AgesOfConflict
                 grid[candidate].nationId = (short)nation.id;
                 nation.territorySize++;
                 ClaimedLandCells++;
-                nation.frontier.Add(candidate);
+                nation.border.Add(candidate);
                 UpdateClaimedCellRendering(nation, candidate, CellRenderKind.Territory);
             }
         }
@@ -173,9 +173,7 @@ namespace AgesOfConflict
 
             // Expansion runs on a slower cadence than the economy, so growth speed can be
             // tuned without changing the tick rate that drives income and population.
-            if (++ticksSinceExpansion < Mathf.Max(1, ticksBetweenExpansions))
-                return false;
-            ticksSinceExpansion = 0;
+            expansionTicks++;
 
             bool anyExpanded = false;
             List<int> nationIndices = new List<int>(nations.Count);
@@ -195,11 +193,17 @@ namespace AgesOfConflict
             {
                 Nation nation = nations[nationIndices[i]];
                 int multiplier = nation.id == expansionBoostNationId ? Mathf.Max(1, expansionBoostMultiplier) : 1;
-                for (int j = 0; j < multiplier; j++)
-                {
-                    expand(nation);
-                }
+                int interval = Mathf.Max(1, Mathf.Max(1, ticksBetweenExpansions) / multiplier);
+                if (expansionTicks % interval != 0)
+                    continue;
+
+                expand(nation);
+                anyExpanded = true;
             }
+
+            if (!anyExpanded)
+                return false;
+
             BuildBorders();
             BuildFrontiers();
             foreach (Nation nation in nations)
