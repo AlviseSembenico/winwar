@@ -9,6 +9,8 @@ namespace AgesOfConflict
         [Header("Expansion Settings")]
         [Tooltip("Number of expansion attempts each nation makes per simulation tick")]
         [Range(1, 50)] public int expansionRate = 8;
+        [Tooltip("Simulation ticks between expansion passes. Higher values slow territorial growth without slowing the economy.")]
+        [Range(1, 100)] public int ticksBetweenExpansions = 10;
         [HideInInspector] public int expansionBoostNationId = -1;
         [HideInInspector] public int expansionBoostMultiplier = 1;
 
@@ -32,6 +34,7 @@ namespace AgesOfConflict
         private int width;
         private int height;
         private WorldRenderer worldRenderer;
+        private int ticksSinceExpansion;
 
         private static readonly int[] dx = { 0, 0, 1, -1 };
         private static readonly int[] dy = { 1, -1, 0, 0 };
@@ -46,6 +49,7 @@ namespace AgesOfConflict
 
             TotalLandCells = 0;
             ClaimedLandCells = 0;
+            ticksSinceExpansion = 0;
 
             for (int i = 0; i < grid.Length; i++)
             {
@@ -107,6 +111,39 @@ namespace AgesOfConflict
             return false;
         }
 
+        public void expand(Nation nation)
+        {
+            HashSet<int> candidates = new HashSet<int>();
+            foreach (int cell in nation.frontier)
+            {
+                int cellX = cell % width;
+                int cellY = cell / width;
+
+                for (int direction = 0; direction < 4; direction++)
+                {
+                    int nx = cellX + dx[direction];
+                    int ny = cellY + dy[direction];
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height)
+                    {
+                        int neighborIndex = ny * width + nx;
+                        if (grid[neighborIndex].IsLand && !grid[neighborIndex].HasOwner)
+                            candidates.Add(neighborIndex);
+                    }
+                }
+
+            }
+            for (int i = nation.frontier.Count - 1; i >= 0; i--)
+                RemoveFrontierCell(nation, i);
+            foreach (int candidate in candidates)
+            {
+                grid[candidate].nationId = (short)nation.id;
+                nation.territorySize++;
+                ClaimedLandCells++;
+                nation.frontier.Add(candidate);
+                UpdateClaimedCellRendering(nation, candidate, true);
+            }
+        }
+
         /// <summary>Advances the economy and territorial-colonization simulation.</summary>
         public bool StepSimulation(float deltaTime)
         {
@@ -120,11 +157,18 @@ namespace AgesOfConflict
             if (IsFullyColonized)
                 return false;
 
+            // Expansion runs on a slower cadence than the economy, so growth speed can be
+            // tuned without changing the tick rate that drives income and population.
+            if (++ticksSinceExpansion < Mathf.Max(1, ticksBetweenExpansions))
+                return false;
+            ticksSinceExpansion = 0;
+
             bool anyExpanded = false;
             List<int> nationIndices = new List<int>(nations.Count);
             for (int i = 0; i < nations.Count; i++)
                 nationIndices.Add(i);
 
+            // randomize the expansion
             for (int i = nationIndices.Count - 1; i > 0; i--)
             {
                 int swap = UnityEngine.Random.Range(0, i + 1);
@@ -137,47 +181,13 @@ namespace AgesOfConflict
             {
                 Nation nation = nations[nationIndices[i]];
                 int multiplier = nation.id == expansionBoostNationId ? Mathf.Max(1, expansionBoostMultiplier) : 1;
-                int attempts = Mathf.Min(expansionRate * multiplier, nation.frontier.Count);
-                for (int attempt = 0; attempt < attempts && nation.frontier.Count > 0; attempt++)
+                for (int j = 0; j < multiplier; j++)
                 {
-                    int frontierIndex = UnityEngine.Random.Range(0, nation.frontier.Count);
-                    int cellIndex = nation.frontier[frontierIndex];
-                    int cellX = cellIndex % width;
-                    int cellY = cellIndex / width;
-                    List<int> candidates = new List<int>(4);
-
-                    for (int direction = 0; direction < 4; direction++)
-                    {
-                        int nx = cellX + dx[direction];
-                        int ny = cellY + dy[direction];
-                        if (nx >= 0 && nx < width && ny >= 0 && ny < height)
-                        {
-                            int neighborIndex = ny * width + nx;
-                            if (grid[neighborIndex].IsLand && !grid[neighborIndex].HasOwner)
-                                candidates.Add(neighborIndex);
-                        }
-                    }
-
-                    if (candidates.Count == 0)
-                    {
-                        RemoveFrontierCell(nation, frontierIndex);
-                        continue;
-                    }
-
-                    int claimedIndex = candidates[UnityEngine.Random.Range(0, candidates.Count)];
-                    grid[claimedIndex].nationId = (short)nation.id;
-                    nation.territorySize++;
-                    ClaimedLandCells++;
-                    nation.frontier.Add(claimedIndex);
-                    UpdateClaimedCellRendering(nation, claimedIndex);
-                    anyExpanded = true;
-
-                    if (candidates.Count == 1)
-                        RemoveFrontierCell(nation, frontierIndex);
+                    expand(nation);
                 }
             }
 
-            if (anyExpanded && worldRenderer != null)
+            if (worldRenderer != null)
                 worldRenderer.ApplyTextureChanges();
 
             return anyExpanded;
@@ -186,11 +196,13 @@ namespace AgesOfConflict
         private void RemoveFrontierCell(Nation nation, int index)
         {
             int last = nation.frontier.Count - 1;
+            int cell = nation.frontier[index];
             nation.frontier[index] = nation.frontier[last];
             nation.frontier.RemoveAt(last);
+            UpdateClaimedCellRendering(nation, cell, false);
         }
 
-        private void UpdateClaimedCellRendering(Nation nation, int cellIndex)
+        private void UpdateClaimedCellRendering(Nation nation, int cellIndex, bool isBorder)
         {
             if (worldRenderer == null)
                 return;
@@ -199,24 +211,9 @@ namespace AgesOfConflict
             int y = cellIndex / width;
             worldRenderer.SetPixelColor(
                 cellIndex,
-                worldRenderer.showBorders && WorldRenderer.IsBorderCell(grid, x, y, width, height, nation.id)
+                worldRenderer.showBorders && isBorder
                     ? worldRenderer.GetBorderColor(grid, x, y, width, height, nation.id)
                     : worldRenderer.GetDisplayColor(nation.id, nation.color));
-
-            for (int direction = 0; direction < 4; direction++)
-            {
-                int nx = x + dx[direction];
-                int ny = y + dy[direction];
-                if (nx >= 0 && nx < width && ny >= 0 && ny < height)
-                {
-                    int neighborIndex = ny * width + nx;
-                    if (grid[neighborIndex].nationId == nation.id
-                        && !WorldRenderer.IsBorderCell(grid, nx, ny, width, height, nation.id))
-                    {
-                        worldRenderer.SetPixelColor(neighborIndex, worldRenderer.GetDisplayColor(nation.id, nation.color));
-                    }
-                }
-            }
         }
 
         /// <summary>
@@ -260,7 +257,7 @@ namespace AgesOfConflict
             {
                 Cell cell = grid[index];
                 if (cell.IsLand && cell.HasOwner && cell.nationId >= 0 && cell.nationId < nations.Count)
-                    UpdateClaimedCellRendering(nations[cell.nationId], index);
+                    UpdateClaimedCellRendering(nations[cell.nationId], index, true);
             }
             worldRenderer?.ApplyTextureChanges();
             return captured;
