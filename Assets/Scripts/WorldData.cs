@@ -63,6 +63,26 @@ namespace AgesOfConflict
             }
             return false;
         }
+
+        /// <summary>
+        /// True when the owned cell at (x, y) touches a cell owned by <paramref name="enemyId"/>,
+        /// so this is the frontier shared with one specific rival rather than with any rival.
+        /// </summary>
+        public static bool IsFrontierWith(this Cell[] grid, int x, int y, int width, int height, int enemyId)
+        {
+            int ownerId = grid[y * width + x].nationId;
+            if (ownerId < 0 || ownerId == enemyId) return false;
+
+            for (int i = 0; i < 4; i++)
+            {
+                int nx = x + dx[i];
+                int ny = y + dy[i];
+
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                if (grid[ny * width + nx].nationId == enemyId) return true;
+            }
+            return false;
+        }
     }
 
     [Serializable]

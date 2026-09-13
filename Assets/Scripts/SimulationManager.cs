@@ -255,7 +255,8 @@ namespace AgesOfConflict
             if (nationSimulator != null) GUILayout.Label($"<b>Colonization:</b> {nationSimulator.ColonizedPercentage:F1}% Claimed");
             GUILayout.Space(8); GUILayout.BeginHorizontal();
             if (GUILayout.Button(isRunning ? "⏸ Pause [Space]" : "▶ Play [Space]", GUILayout.Height(30))) isRunning = !isRunning;
-            GUI.enabled = !isRunning; if (GUILayout.Button("Step [S]", GUILayout.Height(30), GUILayout.Width(75))) { ConfigureSelectedNationExpansionBoost(); nationSimulator?.StepSimulation(tickInterval); AdvanceWars(tickInterval); } GUI.enabled = true;
+            GUI.enabled = !isRunning; if (GUILayout.Button("Step [S]", GUILayout.Height(30), GUILayout.Width(75))) { ConfigureSelectedNationExpansionBoost(); nationSimulator?.StepSimulation(tickInterval); AdvanceWars(tickInterval); }
+            GUI.enabled = true;
             GUILayout.EndHorizontal();
             if (GUILayout.Button("🔄 Regenerate Map [R]", GUILayout.Height(28))) Regenerate();
             if (GUILayout.Button("🎯 Reset Camera [F]", GUILayout.Height(24))) cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
@@ -387,18 +388,68 @@ namespace AgesOfConflict
             List<int> result = new List<int>();
             Cell[] grid = worldGenerator.Grid;
             int width = worldGenerator.width, height = worldGenerator.height;
-            int[] dx = { 0, 0, 1, -1 }, dy = { 1, -1, 0, 0 };
             for (int y = 0; y < height; y++) for (int x = 0; x < width; x++)
             {
                 int index = y * width + x;
                 if (grid[index].nationId != defender) continue;
-                for (int d = 0; d < 4; d++)
-                {
-                    int nx = x + dx[d], ny = y + dy[d];
-                    if (nx >= 0 && nx < width && ny >= 0 && ny < height && grid[ny * width + nx].nationId == attacker) { result.Add(index); break; }
-                }
+                if (grid.IsFrontierWith(x, y, width, height, attacker)) result.Add(index);
             }
-            return result;
+            return SortAlongFront(result);
+        }
+
+        private static readonly int[] frontDx = { 1, -1, 0, 0, 1, 1, -1, -1 };
+        private static readonly int[] frontDy = { 0, 0, 1, -1, 1, -1, 1, -1 };
+
+        /// <summary>
+        /// Orders front cells along the line: the walk starts anywhere and follows the two
+        /// directions out of that cell, one growing the back of the deque and the other its
+        /// front, so the result runs end to end and its middle entry is the middle of the front.
+        /// A front split into several disconnected stretches yields one walked run after another.
+        /// </summary>
+        private List<int> SortAlongFront(List<int> cells)
+        {
+            HashSet<int> remaining = new HashSet<int>(cells);
+            List<int> ordered = new List<int>(cells.Count);
+            for (int i = cells.Count - 1; i >= 0; i--)
+            {
+                int seed = cells[i];
+                if (!remaining.Remove(seed)) continue;
+
+                LinkedList<int> line = new LinkedList<int>();
+                line.AddLast(seed);
+                for (int current = FindNextFrontCell(remaining, seed); current >= 0; current = FindNextFrontCell(remaining, current))
+                {
+                    remaining.Remove(current);
+                    line.AddLast(current);
+                }
+                for (int current = FindNextFrontCell(remaining, seed); current >= 0; current = FindNextFrontCell(remaining, current))
+                {
+                    remaining.Remove(current);
+                    line.AddFirst(current);
+                }
+                ordered.AddRange(line);
+            }
+            return ordered;
+        }
+
+        private int FindNextFrontCell(HashSet<int> remaining, int index)
+        {
+            for (int d = 0; d < 8; d++)
+                if (TryGetFrontNeighbour(remaining, index, d, out int neighbour)) return neighbour;
+            return -1;
+        }
+
+        // Orthogonal directions come first, so the walk only steps diagonally when the line does.
+        private bool TryGetFrontNeighbour(HashSet<int> remaining, int index, int direction, out int neighbour)
+        {
+            neighbour = -1;
+            int x = index % worldGenerator.width + frontDx[direction];
+            int y = index / worldGenerator.width + frontDy[direction];
+            if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height) return false;
+            int candidate = y * worldGenerator.width + x;
+            if (!remaining.Contains(candidate)) return false;
+            neighbour = candidate;
+            return true;
         }
 
         private static void Shuffle(List<int> values)
@@ -583,7 +634,8 @@ namespace AgesOfConflict
             bool tooClose = false; foreach (City city in contextNation.cities) if (Vector2Int.Distance(city.position, contextCellPos) < minCitySpacing) { tooClose = true; break; }
             bool canAfford = contextNation.treasury >= buildCityCost;
             if (tooClose) GUILayout.Label("<color=#FF7777>Too close to an existing city.</color>"); else if (!canAfford) GUILayout.Label("<color=#FF7777>Insufficient gold.</color>");
-            GUI.enabled = canAfford && !tooClose; if (GUILayout.Button($"Build City ({buildCityCost:F0}g)", GUILayout.Height(30))) { BuildCityAt(contextNation, contextCellPos); showContextMenu = false; } GUI.enabled = true;
+            GUI.enabled = canAfford && !tooClose; if (GUILayout.Button($"Build City ({buildCityCost:F0}g)", GUILayout.Height(30))) { BuildCityAt(contextNation, contextCellPos); showContextMenu = false; }
+            GUI.enabled = true;
             if (GUILayout.Button("Cancel")) showContextMenu = false; GUILayout.EndArea();
         }
 
@@ -643,9 +695,9 @@ namespace AgesOfConflict
 
         private void DrawLeaderboard(int max, int top)
         {
-            if (worldGenerator.Nations == null) return; sortedNations.Clear(); sortedNations.AddRange(worldGenerator.Nations); sortedNations.Sort((a,b) => b.territorySize.CompareTo(a.territorySize));
+            if (worldGenerator.Nations == null) return; sortedNations.Clear(); sortedNations.AddRange(worldGenerator.Nations); sortedNations.Sort((a, b) => b.territorySize.CompareTo(a.territorySize));
             int count = Mathf.Min(max, sortedNations.Count); GUI.Box(new Rect(Screen.width - 285, top, 270, 45 + count * 22), "🏆 Nations"); GUILayout.BeginArea(new Rect(Screen.width - 275, top + 27, 250, count * 22));
-            for (int i=0;i<count;i++) GUILayout.Label($"#{i+1} {sortedNations[i].name}: {sortedNations[i].territorySize:N0} px | 🏰{sortedNations[i].cities.Count}"); GUILayout.EndArea();
+            for (int i = 0; i < count; i++) GUILayout.Label($"#{i + 1} {sortedNations[i].name}: {sortedNations[i].territorySize:N0} px | 🏰{sortedNations[i].cities.Count}"); GUILayout.EndArea();
         }
     }
 }
