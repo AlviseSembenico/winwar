@@ -16,11 +16,13 @@ namespace AgesOfConflict
 
         [Header("Economy Tuning")]
         [Tooltip("Gold earned per second for each owned pixel")]
-        public float incomePerPixel = 0.04f;
+        public float incomePerPopulation = 0.1f;
+        public float incomePerPixel = 0.1f;
+        public float interestRate= 0.03f;
 
         [Header("Population Tuning")]
         [Tooltip("People gained per owned pixel each second, until the population cap is reached.")]
-        [Min(0f)] public float populationGrowthPerPixel = 0.05f;
+        [Min(0f)] public float populationGrowthPerPopulation = 0.08f;
         [Tooltip("Maximum population supported by each owned pixel.")]
         [Min(0f)] public float maximumPopulationPerPixel = 100f;
 
@@ -66,7 +68,7 @@ namespace AgesOfConflict
             // Initialize nation economic baselines
             for (int n = 0; n < nations.Count; n++)
             {
-                nations[n].incomePerSec = nations[n].territorySize * incomePerPixel;
+                nations[n].incomePerSec = nations[n].territorySize * incomePerPopulation;
                 nations[n].upkeepPerSec = 0f;
             }
 
@@ -261,7 +263,8 @@ namespace AgesOfConflict
             for (int i = 0; i < nations.Count; i++)
             {
                 Nation nation = nations[i];
-                nation.incomePerSec = nation.territorySize * incomePerPixel;
+                nation.incomePerSec = nation.population * incomePerPopulation + nation.territorySize * incomePerPixel;
+                nation.incomePerSec = nation.incomePerSec * interestRate;
                 nation.upkeepPerSec = 0f;
                 nation.treasury += nation.incomePerSec * deltaTime;
             }
@@ -273,7 +276,7 @@ namespace AgesOfConflict
             {
                 Nation nation = nations[i];
                 float populationCap = nation.territorySize * maximumPopulationPerPixel;
-                float growth = nation.territorySize * populationGrowthPerPixel * deltaTime;
+                float growth = nation.population * populationGrowthPerPopulation * deltaTime;
                 nation.population = Mathf.Min(populationCap, nation.population + growth);
             }
         }

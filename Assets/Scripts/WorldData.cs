@@ -112,7 +112,7 @@ namespace AgesOfConflict
         public int territorySize;
 
         [Header("Economy")]
-        public float treasury = 1000f;
+        public float treasury = 100f;
 
         [Header("Population")]
         public float population;
