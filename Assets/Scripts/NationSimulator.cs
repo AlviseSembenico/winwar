@@ -277,7 +277,7 @@ namespace AgesOfConflict
             {
                 Nation nation = nations[i];
                 float populationCap = nation.territorySize * maximumPopulationPerPixel;
-                float growth = nation.civilianPopulation * populationGrowthPerPopulation * deltaTime;
+                float growth = Mathf.Max(nation.civilianPopulation,10.0f) * populationGrowthPerPopulation * deltaTime;
                 nation.population = Mathf.Min(populationCap, nation.population + growth);
             }
         }

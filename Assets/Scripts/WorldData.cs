@@ -118,7 +118,7 @@ namespace AgesOfConflict
         public float population;
         [Tooltip("Percentage of the population serving in the army.")]
         [Range(0f, 100f)]
-        public float armyPercentage = 0f;
+        public float armyPercentage = 20f;
         public float armyPopulation => population * Mathf.Clamp(armyPercentage, 0f, 100f) / 100f;
         public float civilianPopulation => population - armyPopulation;
         public float incomePerSec;

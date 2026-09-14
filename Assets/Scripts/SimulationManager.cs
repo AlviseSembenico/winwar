@@ -19,7 +19,7 @@ namespace AgesOfConflict
 
         [Header("War Settings")]
         [Tooltip("Maximum number of border cells a war may capture per second.")]
-        public float maximumWarAdvanceSpeed = 30f;
+        public float maximumWarAdvanceSpeed = 100f;
 
         [Tooltip("Treasury-strength advantage required to reach the maximum advance speed.")]
         public float strengthDeltaForMaximumSpeed = 20f;
@@ -522,20 +522,18 @@ namespace AgesOfConflict
         private void ApplyWarCasualties(War war, float deltaTime)
         {
             war.casualtyProgress += deltaTime;
-            while (war.casualtyProgress >= 1f)
+            while (war.casualtyProgress >= .2f)
             {
-                war.casualtyProgress -= 1f;
+                war.casualtyProgress -= .2f;
                 float attackingForce = GetAttackingForce(war);
-                float attackerLosses = attackingForce * .01f;
+                float attackerLosses = Mathf.Ceil(attackingForce * .05f);
                 // Defenders lose one third of the attacker's *casualties*, not one third
                 // of the entire attacking force each second.
-                float defenderLosses = attackerLosses / 3f;
+                float defenderLosses = Mathf.Ceil(attackerLosses / 3f);
                 Nation attacker = worldGenerator.Nations[war.attackerId];
                 Nation defender = worldGenerator.Nations[war.defenderId];
-                attackerLosses = Mathf.Min(attackerLosses, attackingForce, attacker.population);
-                defenderLosses = Mathf.Min(defenderLosses, GetDefendingForce(war), defender.population);
                 attacker.population -= attackerLosses;
-                defender.population -= defenderLosses;
+                defender.population -= Mathf.Min(defenderLosses, defender.armyPopulation);
             }
         }
 
