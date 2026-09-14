@@ -14,7 +14,7 @@ namespace AgesOfConflict
         public CameraController cameraController;
 
         [Header("City Construction")]
-        public float buildCityCost = 100f;
+        public float buildCityCost = 1000f;
         public int minCitySpacing = 6;
 
         [Header("War Settings")]
@@ -443,13 +443,14 @@ namespace AgesOfConflict
                     continue;
                 }
 
+                var attackerCities = findCities(FindDefenderBorderCells(war.defenderId, war.attackerId), 3f);
                 // An assault only advances with at least a 50% force advantage.
                 if (attackingForce < defendingForce * 1.5f)
                     continue;
                 float advantage = attackingForce / Mathf.Max(1f, defendingForce) - 1.5f;
                 float speed = Mathf.Min(maximumWarAdvanceSpeed, maximumWarAdvanceSpeed * advantage);
                 float toCapture = speed * deltaTime;
-                int cellsToCapture = Mathf.FloorToInt(toCapture);
+                int cellsToCapture = Mathf.FloorToInt(toCapture) + Mathf.FloorToInt(attackerCities.Count * 0.5f);
 
                 List<int> border = FindDefenderBorderCells(war.attackerId, war.defenderId);
                 if (border.Count == 0)
@@ -519,17 +520,37 @@ namespace AgesOfConflict
             worldRenderer.SetActiveWarBorders(nationPairs);
         }
 
+        private List<City> findCities(List<int> cellIndices, float threshold)
+        {
+            List<City> result = new List<City>();
+            foreach (int index in cellIndices)
+            {
+                Vector2Int pos = worldGenerator.IndexToVec2(index);
+                foreach (Nation nation in worldGenerator.Nations)
+                foreach (City city in nation.cities)
+                    if (Vector2Int.Distance(pos, city.position) <= threshold)
+                        result.Add(city);
+            }
+            return result;
+        }
+        
         private void ApplyWarCasualties(War war, float deltaTime)
         {
             war.casualtyProgress += deltaTime;
             while (war.casualtyProgress >= .2f)
             {
                 war.casualtyProgress -= .2f;
+                // check nearby defender cities
+                var defenderCities = findCities(FindDefenderBorderCells(war.attackerId, war.defenderId), 5f);
+
                 float attackingForce = GetAttackingForce(war);
-                float attackerLosses = Mathf.Ceil(attackingForce * .05f);
+                float attackerLosses = Mathf.Ceil(attackingForce * .05f) + Mathf.Ceil(defenderCities.Count * 2f);
                 // Defenders lose one third of the attacker's *casualties*, not one third
                 // of the entire attacking force each second.
                 float defenderLosses = Mathf.Ceil(attackerLosses / 3f);
+
+
+
                 Nation attacker = worldGenerator.Nations[war.attackerId];
                 Nation defender = worldGenerator.Nations[war.defenderId];
                 attacker.population -= attackerLosses;
