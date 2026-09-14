@@ -18,10 +18,6 @@ namespace AgesOfConflict
         public bool HasOwner => nationId >= 0;
     }
 
-    /// <summary>
-    /// Grid queries that depend on a cell's neighbours, which a <see cref="Cell"/> cannot
-    /// answer on its own: it stores no coordinates and no reference to the grid.
-    /// </summary>
     public static class GridExtensions
     {
         private static readonly int[] dx = { 0, 0, 1, -1 };

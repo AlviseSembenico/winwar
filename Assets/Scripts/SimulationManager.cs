@@ -100,6 +100,13 @@ namespace AgesOfConflict
             cameraController.OnLeftClickTap -= HandleNationSelection;
         }
 
+        private (int, int) IndexToCoord(int index)
+        {
+            int x = index % worldGenerator.width;
+            int y = index / worldGenerator.width;
+            return (x, y);
+        }
+
         private void HandleNationSelection(Vector3 worldPos)
         {
             if (!TryGetCell(worldPos, out Cell cell)) return;
@@ -475,8 +482,8 @@ namespace AgesOfConflict
                     if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height || worldGenerator.Grid[ny * worldGenerator.width + nx].nationId != war.attackerId) continue;
                     // Place each flag just behind its side of the front, rather than
                     // on the black border pixels themselves.
-                    targets.Add(new FlagTarget { nationId = war.attackerId, position = GetSafeBorderInset(nx, ny, -dx[d], -dy[d], war.attackerId, 2), color = worldGenerator.Nations[war.attackerId].color });
-                    targets.Add(new FlagTarget { nationId = war.defenderId, position = GetSafeBorderInset(x, y, dx[d], dy[d], war.defenderId, 2), color = worldGenerator.Nations[war.defenderId].color });
+                    targets.Add(new FlagTarget { nationId = war.attackerId, position = GetSafeBorderInset(new Vector2(nx + .5f, ny + .5f), new Vector2(-dx[d], -dy[d]), war.attackerId, 2), color = worldGenerator.Nations[war.attackerId].color });
+                    targets.Add(new FlagTarget { nationId = war.defenderId, position = GetSafeBorderInset(new Vector2(x + .5f, y + .5f), new Vector2(dx[d], dy[d]), war.defenderId, 2), color = worldGenerator.Nations[war.defenderId].color });
                     break;
                 }
             }
@@ -535,40 +542,54 @@ namespace AgesOfConflict
             List<int> border = FindDefenderBorderCells(war.attackerId, war.defenderId);
             if (border.Count == 0) return false;
 
-            int index = border[border.Count / 2];
-            int x = index % worldGenerator.width;
-            int y = index / worldGenerator.width;
-            int[] dx = { 0, 0, 1, -1 };
-            int[] dy = { 1, -1, 0, 0 };
-            for (int direction = 0; direction < 4; direction++)
+            // The front is sorted end to end, so its middle entry is the middle of the front
+            // and the entries around it are its neighbours on the map.
+            int index = border.Count / 2;
+            int delta = Mathf.Min(5, index, border.Count - 1 - index);
+            if (delta == 0) return false;
+            double[] X = new double[2 * delta + 1];
+            double[] Y = new double[2 * delta + 1];
+            for (int i = -delta; i <= delta; i++)
             {
-                int nx = x + dx[direction], ny = y + dy[direction];
-                if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height
-                    || worldGenerator.Grid[ny * worldGenerator.width + nx].nationId != war.attackerId) continue;
-
-                // Push each label away from the border, deeper into its own territory.
-                // (dx, dy) points from defender toward attacker, so attacker steps further
-                // in that direction while defender steps in the opposite direction.
-                attackerLabel = GetSafeBorderInset(nx, ny, dx[direction], dy[direction], war.attackerId, 8);
-                defenderLabel = GetSafeBorderInset(x, y, -dx[direction], -dy[direction], war.defenderId, 8);
-                return true;
+                int cell = border[index + i];
+                (int x, int y) = IndexToCoord(cell);
+                X[i + delta] = x;
+                Y[i + delta] = y;
             }
-            return false;
+            var (intercept, slope) = MathNet.Numerics.Fit.Line(X, Y);
+
+            // A perfectly vertical front has no finite slope, but it still runs straight up.
+            Vector2 front = double.IsNaN(slope) || double.IsInfinity(slope) ? Vector2.up : new Vector2(1f, (float)slope).normalized;
+            Vector2 center = new Vector2((float)X[delta] + .5f, (float)Y[delta] + .5f);
+
+
+            Vector2 normal = new Vector2(-front.y, front.x);
+            if (GetOwnerAt(center + normal * 2f) != war.attackerId) normal = -normal;
+            if (GetOwnerAt(center + normal * 2f) != war.attackerId) return false;
+
+            attackerLabel = GetSafeBorderInset(center + normal * 2f, normal, war.attackerId, 6);
+            defenderLabel = GetSafeBorderInset(center, -normal, war.defenderId, 8);
+            return true;
+        }
+
+        private int GetOwnerAt(Vector2 position)
+        {
+            int x = Mathf.FloorToInt(position.x), y = Mathf.FloorToInt(position.y);
+            if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height) return -1;
+            return worldGenerator.Grid[y * worldGenerator.width + x].nationId;
         }
 
         // Move inward only as far as requested, stopping before leaving the owner.
-        private Vector2 GetSafeBorderInset(int startX, int startY, int stepX, int stepY, int nationId, int cellsInward)
+        private Vector2 GetSafeBorderInset(Vector2 start, Vector2 step, int nationId, int cellsInward)
         {
-            int x = startX, y = startY;
+            Vector2 position = start;
             for (int distance = 0; distance < cellsInward; distance++)
             {
-                int nextX = x + stepX, nextY = y + stepY;
-                if (nextX < 0 || nextX >= worldGenerator.width || nextY < 0 || nextY >= worldGenerator.height
-                    || worldGenerator.Grid[nextY * worldGenerator.width + nextX].nationId != nationId) break;
-                x = nextX;
-                y = nextY;
+                Vector2 next = position + step;
+                if (GetOwnerAt(next) != nationId) break;
+                position = next;
             }
-            return new Vector2(x + .5f, y + .5f);
+            return position;
         }
 
         private GUIStyle forceLabelStyle;
