@@ -350,6 +350,9 @@ namespace AgesOfConflict
         // the border is of defender 
         private void CaptureCells(War war, List<int> border, int amount)
         {
+            amount = Mathf.Clamp(amount, 0, border.Count);
+            if (amount == 0) return;
+
             // conquer the amount that are the further from the capital of the defending team.
             Nation defender = worldGenerator.Nations[war.defenderId];
             Nation attacker = worldGenerator.Nations[war.attackerId];
@@ -367,7 +370,15 @@ namespace AgesOfConflict
                 worldGenerator.Grid[border[i]].nationId = (short)war.attackerId;
                 worldGenerator.Nations[war.attackerId].territorySize++;
                 defender.territorySize--;
+                // Otherwise the next border rebuild can paint these cells with
+                // the former owner's colour again.
+                defender.border.Remove(border[i]);
+                defender.frontier.Remove(border[i]);
             }
+            // Reuse the existing renderer so neighbouring borders and city markers
+            // are refreshed too, rather than just painting over the captured pixels.
+            worldRenderer?.RenderWorld(worldGenerator.Grid, worldGenerator.Nations,
+                worldGenerator.width, worldGenerator.height);
         }
 
         private void RefreshWarBorderHighlight()
