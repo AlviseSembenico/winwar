@@ -58,6 +58,8 @@ Thumbs.db
 *.sublime-workspace
 *.sublime-project
 .vscode/
+!.vscode/
+!.vscode/settings.json
 .history/
 *.png
 *.jpg

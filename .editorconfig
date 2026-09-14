@@ -1,0 +1,53 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.cs]
+# Supported by Rider, Visual Studio, and the C# Dev Kit formatter.
+max_line_length = 120
+tab_width = 4
+
+# Keep braces, control-flow clauses, and members visually consistent.
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+csharp_preserve_single_line_blocks = false
+csharp_preserve_single_line_statements = false
+
+# Keep wrapped expressions and bodies aligned predictably.
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+csharp_indent_case_contents = true
+csharp_indent_case_contents_when_block = true
+csharp_indent_switch_labels = true
+csharp_indent_labels = flush_left
+
+# Rider/ReSharper formatter: preserve at most one blank line and wrap fluent
+# calls once they exceed max_line_length.
+resharper_keep_blank_lines_in_code = 1
+resharper_keep_blank_lines_in_declarations = 1
+resharper_keep_blank_lines_before_rbrace = 0
+resharper_csharp_keep_existing_linebreaks = false
+resharper_csharp_wrap_chained_method_calls = chop_if_long
+resharper_csharp_wrap_before_first_method_call = true
+resharper_csharp_align_multiline_argument = true
+resharper_csharp_align_multiline_parameter = true
+
+# Avoid trailing commas changing format between editors.
+dotnet_style_prefer_inferred_tuple_names = true:suggestion
+
+[*.{json,asmdef,asmref}]
+indent_size = 2
+
+[*.{md,yml,yaml}]
+trim_trailing_whitespace = false
