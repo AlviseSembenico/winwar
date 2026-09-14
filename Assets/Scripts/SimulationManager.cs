@@ -346,15 +346,20 @@ namespace AgesOfConflict
             if (warsChanged) RefreshWarBorderHighlight();
         }
 
+
+        // the border is of defender 
         private void CaptureCells(War war, List<int> border, int amount)
         {
             // conquer the amount that are the further from the capital of the defending team.
             Nation defender = worldGenerator.Nations[war.defenderId];
-            var capital = defender.capital;
+            Nation attacker = worldGenerator.Nations[war.attackerId];
+            var defenderCapital = defender.capital;
+            var attackCapital = attacker.capital;
             border.Sort((a, b) =>
             {
-                int distanceA = (worldGenerator.IndexToVec2(a) - capital).sqrMagnitude;
-                int distanceB = (worldGenerator.IndexToVec2(b) - capital).sqrMagnitude;
+                int distanceA = (worldGenerator.IndexToVec2(a) - defenderCapital).sqrMagnitude;
+                int distanceB = (worldGenerator.IndexToVec2(b) - defenderCapital).sqrMagnitude;
+
                 return distanceB.CompareTo(distanceA);
             });
             for (int i = 0; i < amount; i++)
