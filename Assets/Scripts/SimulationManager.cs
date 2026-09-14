@@ -35,7 +35,7 @@ namespace AgesOfConflict
         public float tickInterval = 0.04f;
         public int speedMultiplier = 1;
 
-        [Tooltip("The selected nation receives five expansion attempts for every normal attempt.")]
+        [Tooltip("The selected nation expands twice as often as normal.")]
         public bool selectedNationGrowsFaster = true;
 
         [Tooltip("Prevents selecting a different nation after taking control of one.")]
@@ -114,6 +114,8 @@ namespace AgesOfConflict
 
         private void HandleNationSelection(Vector3 worldPos)
         {
+            if (IsPointerOverNationPanel())
+                return;
             if (!TryGetCell(worldPos, out Cell cell))
                 return;
             if (!cell.HasOwner || cell.nationId >= worldGenerator.Nations.Count)
@@ -135,6 +137,8 @@ namespace AgesOfConflict
 
         private void HandleRightClickTap(Vector3 worldPos)
         {
+            if (IsPointerOverNationPanel())
+                return;
             if (!TryGetCell(worldPos, out Cell cell) || !cell.HasOwner || cell.nationId >= worldGenerator.Nations.Count)
             {
                 showContextMenu = false;
@@ -214,7 +218,7 @@ namespace AgesOfConflict
                 return;
             nationSimulator.expansionBoostNationId =
                 selectedNationGrowsFaster && selectedNation != null ? selectedNation.id : -1;
-            nationSimulator.expansionBoostMultiplier = 5;
+            nationSimulator.expansionBoostMultiplier = 2;
         }
 
         private void HandleHotkeys()
@@ -315,7 +319,7 @@ namespace AgesOfConflict
             );
             selectedNationGrowsFaster = GUILayout.Toggle(
                 selectedNationGrowsFaster,
-                "Selected state grows 5× faster",
+                "Selected state grows 2× faster",
                 GUILayout.Height(26)
             );
             GUI.enabled = selectedNation != null;
@@ -379,10 +383,10 @@ namespace AgesOfConflict
                     commandMessage = $"{selectedNation.name} is already at war with {contextNation.name}.";
                     return;
                 }
-            float committedForce = selectedNation.population * percentage / 100f;
+            float committedForce = selectedNation.armyPopulation * percentage / 100f;
             if (committedForce < 1f)
             {
-                commandMessage = "Commit at least one person to attack.";
+                commandMessage = "Commit at least one soldier to attack. Increase the army allocation if needed.";
                 return;
             }
             War newWar = new War
@@ -417,7 +421,7 @@ namespace AgesOfConflict
         private void RemoveWar(War war)
         {
             wars.Remove(war);
-            // TODO: More stuff, return the troops to the overall population
+            // Troops remain part of the population; ending a war frees them for defense.
         }
 
         private void AdvanceWars(float deltaTime)
@@ -535,18 +539,18 @@ namespace AgesOfConflict
             }
         }
 
-        // The committed percentage is retained for the whole war, so its force follows
-        // the nation's current population (including population growth and casualties).
+        // The committed percentage is a share of the army, so its force follows
+        // population growth, casualties, and changes to the nation's army allocation.
         private float GetAttackingForce(War war)
         {
             Nation attacker = worldGenerator.Nations[war.attackerId];
-            return Mathf.Min(attacker.population, attacker.population * war.attackingPercentage / 100f);
+            return attacker.armyPopulation * Mathf.Clamp(war.attackingPercentage, 0f, 100f) / 100f;
         }
 
         private float GetDefendingForce(War war)
         {
             Nation defender = worldGenerator.Nations[war.defenderId];
-            float availableDefenders = defender.population;
+            float availableDefenders = defender.armyPopulation;
             foreach (War outgoingWar in wars)
                 if (outgoingWar.attackerId == defender.id)
                     availableDefenders -= GetAttackingForce(outgoingWar);
@@ -892,9 +896,9 @@ namespace AgesOfConflict
                 GUILayout.BeginArea(new Rect(warX + 10, warY + 25, warWidth - 20, warHeight - 30));
                 float strength = nationSimulator.ComputeStrength(contextNation);
                 GUILayout.Label($"Attack <b>{contextNation.name}</b>?");
-                GUILayout.Label($"Population: {selectedNation.population:F0} | Enemy: {contextNation.population:F0}");
+                GUILayout.Label($"Army: {selectedNation.armyPopulation:F0} | Enemy: {contextNation.armyPopulation:F0}");
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Commit population:", GUILayout.Width(125));
+                GUILayout.Label("Commit army:", GUILayout.Width(125));
                 attackPercentage = GUILayout.TextField(attackPercentage, 3, GUILayout.Width(42));
                 GUILayout.Label("%");
                 GUILayout.EndHorizontal();
@@ -965,6 +969,27 @@ namespace AgesOfConflict
             worldRenderer.ApplyTextureChanges();
         }
 
+        private Rect GetNationPanelRect(Nation nation)
+        {
+            return new Rect(Screen.width - 285, 15, 270, 260 + nation.cities.Count * 22);
+        }
+
+        private bool IsPointerOverNationPanel()
+        {
+            Nation nation = selectedNation ?? hoveredNation;
+            if (nation == null)
+                return false;
+            Vector3 mouse = Input.mousePosition;
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+            {
+                Vector2 position = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
+                mouse = new Vector3(position.x, position.y);
+            }
+#endif
+            return GetNationPanelRect(nation).Contains(new Vector2(mouse.x, Screen.height - mouse.y));
+        }
+
         private void DrawRightPanel()
         {
             Nation nation = selectedNation ?? hoveredNation;
@@ -973,7 +998,7 @@ namespace AgesOfConflict
                 DrawLeaderboard(12, 15);
                 return;
             }
-            Rect rect = new Rect(Screen.width - 285, 15, 270, 210);
+            Rect rect = GetNationPanelRect(nation);
             GUI.Box(rect, selectedNation != null ? "Controlled Nation" : "State Overview");
             GUILayout.BeginArea(new Rect(rect.x + 10, rect.y + 30, rect.width - 20, rect.height - 40));
             GUILayout.Label($"<size=15><b>■ {nation.name}</b></size>");
@@ -982,10 +1007,25 @@ namespace AgesOfConflict
             GUILayout.Label($"Treasury: <color=#FFD700>{nation.treasury:F1} gold</color>");
             GUILayout.Label($"Population: {nation.population:F0}");
             GUILayout.Label($"Income: +{nation.incomePerSec:F1} / sec");
+            GUILayout.Space(6);
+            GUILayout.Label($"Population in army: {nation.armyPercentage:F0}%");
+            bool wasEnabled = GUI.enabled;
+            GUI.enabled = wasEnabled && selectedNation != null;
+            float armyPercentage = GUILayout.HorizontalSlider(nation.armyPercentage, 0f, 100f);
+            if (selectedNation != null)
+                nation.armyPercentage = Mathf.Round(armyPercentage);
+            GUI.enabled = wasEnabled;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("0%");
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("100%");
+            GUILayout.EndHorizontal();
+            GUILayout.Label($"Army: {nation.armyPopulation:F0} soldiers");
             foreach (City city in nation.cities)
                 GUILayout.Label($"{(city.isCapital ? "Capital" : "City")}: {city.name}");
             GUILayout.EndArea();
-            int leaderboardTop = selectedNation == null ? 240 : DrawWarsPanel(240);
+            int nextPanelTop = Mathf.CeilToInt(rect.yMax) + 15;
+            int leaderboardTop = selectedNation == null ? nextPanelTop : DrawWarsPanel(nextPanelTop);
             DrawLeaderboard(6, leaderboardTop);
         }
 

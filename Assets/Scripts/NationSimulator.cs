@@ -19,6 +19,7 @@ namespace AgesOfConflict
         public float incomePerPopulation = 0.1f;
         public float incomePerPixel = 0.1f;
         public float interestRate= 0.03f;
+        public float upkeepPerArmyPopulation = 0.05f;
 
         [Header("Population Tuning")]
         [Tooltip("People gained per owned pixel each second, until the population cap is reached.")]
@@ -263,9 +264,9 @@ namespace AgesOfConflict
             for (int i = 0; i < nations.Count; i++)
             {
                 Nation nation = nations[i];
-                nation.incomePerSec = nation.population * incomePerPopulation + nation.territorySize * incomePerPixel;
+                nation.incomePerSec = nation.civilianPopulation * incomePerPopulation + nation.territorySize * incomePerPixel;
                 nation.incomePerSec = nation.incomePerSec * interestRate;
-                nation.upkeepPerSec = 0f;
+                nation.upkeepPerSec = nation.armyPopulation * upkeepPerArmyPopulation;
                 nation.treasury += nation.incomePerSec * deltaTime;
             }
         }
@@ -276,7 +277,7 @@ namespace AgesOfConflict
             {
                 Nation nation = nations[i];
                 float populationCap = nation.territorySize * maximumPopulationPerPixel;
-                float growth = nation.population * populationGrowthPerPopulation * deltaTime;
+                float growth = nation.civilianPopulation * populationGrowthPerPopulation * deltaTime;
                 nation.population = Mathf.Min(populationCap, nation.population + growth);
             }
         }
