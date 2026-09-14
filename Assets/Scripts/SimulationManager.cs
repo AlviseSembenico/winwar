@@ -52,18 +52,17 @@ namespace AgesOfConflict
         private string attackPercentage = "10";
         private readonly List<War> wars = new List<War>();
 
-        private class War
+        public class War
         {
             public int attackerId;
             public int defenderId;
-            public float captureProgress;
             public float casualtyProgress;
             public float attackingPercentage;
             public readonly List<WarFlag> flags = new List<WarFlag>();
         }
 
         // Flags are persistent objects: their positions animate independently toward a new front.
-        private class WarFlag
+        public class WarFlag
         {
             public int nationId;
             public Vector2 position;
@@ -98,13 +97,6 @@ namespace AgesOfConflict
             if (cameraController == null) return;
             cameraController.OnRightClickTap -= HandleRightClickTap;
             cameraController.OnLeftClickTap -= HandleNationSelection;
-        }
-
-        private (int, int) IndexToCoord(int index)
-        {
-            int x = index % worldGenerator.width;
-            int y = index / worldGenerator.width;
-            return (x, y);
         }
 
         private void HandleNationSelection(Vector3 worldPos)
@@ -306,37 +298,71 @@ namespace AgesOfConflict
                 : $"War declared. The front will form when the nations share a border.";
         }
 
+        private void UpdateWarUI(War war)
+        {
+            // A declared war remains active while expanding nations are still separated.
+            // Hide its old formation until a new shared border exists.
+            if (!HaveSharedBorder(war.attackerId, war.defenderId))
+            {
+                war.flags.Clear();
+                return;
+            }
+            bool hadVisibleFront = war.flags.Count > 0;
+            RefreshWarFlags(war);
+            if (!hadVisibleFront) RefreshWarBorderHighlight();
+        }
+        private void RemoveWar(War war)
+        {
+            wars.Remove(war);
+            // TODO: More stuff, return the troops to the overall population 
+        }
+
         private void AdvanceWars(float deltaTime)
         {
             bool warsChanged = false;
             for (int i = wars.Count - 1; i >= 0; i--)
             {
                 War war = wars[i];
-                // A declared war remains active while expanding nations are still separated.
-                // Hide its old formation until a new shared border exists.
-                if (!HaveSharedBorder(war.attackerId, war.defenderId)) { war.flags.Clear(); continue; }
-                bool hadVisibleFront = war.flags.Count > 0;
-                RefreshWarFlags(war);
-                if (!hadVisibleFront) RefreshWarBorderHighlight();
+                UpdateWarUI(war);
+
                 ApplyWarCasualties(war, deltaTime);
                 float attackingForce = GetAttackingForce(war);
-                if (attackingForce < 1f) { wars.RemoveAt(i); warsChanged = true; continue; }
                 float defendingForce = GetDefendingForce(war);
+                // remove war if the 
+                if (attackingForce < 1f) { RemoveWar(war); warsChanged = true; continue; }
+
                 // An assault only advances with at least a 50% force advantage.
-                if (attackingForce < defendingForce * 1.5f) continue;
+                if (attackingForce < defendingForce * 1.5f)
+                    continue;
                 float advantage = attackingForce / Mathf.Max(1f, defendingForce) - 1.5f;
                 float speed = Mathf.Min(maximumWarAdvanceSpeed, maximumWarAdvanceSpeed * advantage);
-                war.captureProgress += speed * deltaTime;
-                int cellsToCapture = Mathf.FloorToInt(war.captureProgress);
-                if (cellsToCapture <= 0) continue;
-                war.captureProgress -= cellsToCapture;
+                float toCapture = speed * deltaTime;
+                int cellsToCapture = Mathf.FloorToInt(toCapture);
+
                 List<int> border = FindDefenderBorderCells(war.attackerId, war.defenderId);
-                if (border.Count == 0) { wars.RemoveAt(i); warsChanged = true; continue; }
-                Shuffle(border);
-                if (border.Count > cellsToCapture) border.RemoveRange(cellsToCapture, border.Count - cellsToCapture);
-                nationSimulator.CaptureCells(border, war.attackerId);
+                if (border.Count == 0) { RemoveWar(war); warsChanged = true; continue; }
+                CaptureCells(war, border, cellsToCapture);
             }
             if (warsChanged) RefreshWarBorderHighlight();
+        }
+
+        private void CaptureCells(War war, List<int> border, int amount)
+        {
+            // conquer the amount that are the further from the capital of the defending team.
+            Nation defender = worldGenerator.Nations[war.defenderId];
+            var capital = defender.capital;
+            border.Sort((a, b) =>
+            {
+                int distanceA = (worldGenerator.IndexToVec2(a) - capital).sqrMagnitude;
+                int distanceB = (worldGenerator.IndexToVec2(b) - capital).sqrMagnitude;
+                return distanceB.CompareTo(distanceA);
+            });
+            for (int i = 0; i < amount; i++)
+            {
+                worldGenerator.Grid[border[i]].nationId = (short)war.attackerId;
+                worldGenerator.Nations[war.attackerId].territorySize++;
+                defender.territorySize--;
+            }
         }
 
         private void RefreshWarBorderHighlight()
@@ -552,7 +578,7 @@ namespace AgesOfConflict
             for (int i = -delta; i <= delta; i++)
             {
                 int cell = border[index + i];
-                (int x, int y) = IndexToCoord(cell);
+                (int x, int y) = worldGenerator.IndexToCoord(cell);
                 X[i + delta] = x;
                 Y[i + delta] = y;
             }

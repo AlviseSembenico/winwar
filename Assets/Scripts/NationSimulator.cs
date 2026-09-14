@@ -224,17 +224,6 @@ namespace AgesOfConflict
         }
 
 
-        private void RemoveFrontierCell(Nation nation, int index)
-        {
-            int last = nation.frontier.Count - 1;
-            int cell = nation.frontier[index];
-            nation.frontier[index] = nation.frontier[last];
-            nation.frontier.RemoveAt(last);
-            UpdateClaimedCellRendering(nation, cell, CellRenderKind.Territory);
-        }
-
-
-
         private void UpdateClaimedCellRendering(Nation nation, int cellIndex, CellRenderKind kind)
         {
             if (worldRenderer == null)
@@ -261,50 +250,10 @@ namespace AgesOfConflict
             worldRenderer.SetPixelColor(cellIndex, color);
         }
 
-        /// <summary>
-        /// Calculates a nation's current war strength. Kept separate so later military,
-        /// diplomacy, technology, or logistics systems can extend the calculation.
-        /// </summary>
+
         public float ComputeStrength(Nation nation)
         {
             return nation == null ? 0f : Mathf.Max(0f, nation.treasury);
-        }
-
-        /// <summary>Transfers border cells during a war and refreshes ownership/frontier data.</summary>
-        public int CaptureCells(IEnumerable<int> cellIndices, int attackerId)
-        {
-            if (grid == null || nations == null || attackerId < 0 || attackerId >= nations.Count)
-                return 0;
-
-            int captured = 0;
-            HashSet<int> refresh = new HashSet<int>();
-            foreach (int index in cellIndices)
-            {
-                if (index < 0 || index >= grid.Length || !grid[index].IsLand || grid[index].nationId == attackerId)
-                    continue;
-                int defenderId = grid[index].nationId;
-                if (defenderId < 0 || defenderId >= nations.Count) continue;
-                grid[index].nationId = (short)attackerId;
-                nations[attackerId].territorySize++;
-                nations[defenderId].territorySize = Mathf.Max(0, nations[defenderId].territorySize - 1);
-                captured++;
-                refresh.Add(index);
-                int x = index % width, y = index / width;
-                for (int d = 0; d < 4; d++)
-                {
-                    int nx = x + dx[d], ny = y + dy[d];
-                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) refresh.Add(ny * width + nx);
-                }
-            }
-            if (captured == 0) return 0;
-            foreach (int index in refresh)
-            {
-                Cell cell = grid[index];
-                if (cell.IsLand && cell.HasOwner && cell.nationId >= 0 && cell.nationId < nations.Count)
-                    UpdateClaimedCellRendering(nations[cell.nationId], index, CellRenderKind.Territory);
-            }
-            worldRenderer?.ApplyTextureChanges();
-            return captured;
         }
 
         private void UpdateEconomy(float deltaTime)

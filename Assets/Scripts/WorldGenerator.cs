@@ -31,6 +31,20 @@ namespace AgesOfConflict
         public Cell[] Grid { get; private set; }
         public List<Nation> Nations { get; private set; } = new List<Nation>();
 
+        public (int, int) IndexToCoord(int index)
+        {
+            int x = index % width;
+            int y = index / width;
+            return (x, y);
+        }
+
+
+        public Vector2Int IndexToVec2(int index)
+        {
+            var coord = IndexToCoord(index);
+            return new Vector2Int(coord.Item1, coord.Item2);
+        }
+
         public void GenerateWorld()
         {
             if (randomSeedOnStart)
