@@ -484,9 +484,7 @@ namespace AgesOfConflict
             float average = (float)distances.Average();
             // Jitter must be baked into the key once per cell; drawing it inside a
             // comparator makes comparisons inconsistent and Sort throws.
-            border = border
-                .OrderByDescending(index => GetConquestScore(index, defenderCapital, average))
-                .ToList();
+            border = border.OrderByDescending(index => GetConquestScore(index, defenderCapital, average)).ToList();
             for (int i = 0; i < amount; i++)
             {
                 worldGenerator.Grid[border[i]].nationId = (short)war.attackerId;
@@ -497,6 +495,8 @@ namespace AgesOfConflict
                 defender.border.Remove(border[i]);
                 defender.frontier.Remove(border[i]);
             }
+            nationSimulator?.RebuildBorders();
+
             // A city changes hands only when its own cell is captured.
             // Iterate backwards because transferring removes it from the defender's list.
             for (int i = defender.cities.Count - 1; i >= 0; i--)
@@ -549,7 +549,7 @@ namespace AgesOfConflict
             }
             return result;
         }
-        
+
         private void ApplyWarCasualties(War war, float deltaTime)
         {
             war.casualtyProgress += deltaTime;
@@ -564,8 +564,6 @@ namespace AgesOfConflict
                 // Defenders lose one third of the attacker's *casualties*, not one third
                 // of the entire attacking force each second.
                 float defenderLosses = Mathf.Ceil(attackerLosses / 3f);
-
-
 
                 Nation attacker = worldGenerator.Nations[war.attackerId];
                 Nation defender = worldGenerator.Nations[war.defenderId];

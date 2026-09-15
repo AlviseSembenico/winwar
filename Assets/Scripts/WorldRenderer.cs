@@ -40,6 +40,8 @@ namespace AgesOfConflict
         private int selectedNationId = -1;
         private City selectedCity;
         private readonly HashSet<ulong> activeWarBorders = new HashSet<ulong>();
+        private static readonly int[] dx = { 0, 0, 1, -1 };
+        private static readonly int[] dy = { 1, -1, 0, 0 };
 
         public int SelectedNationId => selectedNationId;
 
@@ -119,7 +121,8 @@ namespace AgesOfConflict
             renderedWidth = width;
             renderedHeight = height;
 
-            if (worldTexture == null || pixelBuffer == null || pixelBuffer.Length != width * height)
+            if (worldTexture == null || worldTexture.width != width || worldTexture.height != height
+                || pixelBuffer == null || pixelBuffer.Length != width * height)
             {
                 InitializeTexture(width, height);
             }
@@ -163,41 +166,6 @@ namespace AgesOfConflict
                                 pixelBuffer[i] = unclaimedLandColor;
                                 break;
                         }
-                    }
-                }
-            }
-
-            if (showCities)
-            {
-                for (int n = 0; n < nations.Count; n++)
-                {
-                    for (int c = 0; c < nations[n].cities.Count; c++)
-                    {
-                        DrawCityMarker(nations[n].cities[c], width, height);
-                    }
-                }
-            }
-
-            // Dilate war borders: collect red pixels, then paint adjacent black borders red.
-            // This is O(warBorderCells * 4) — far cheaper than a per-pixel radius check.
-            if (activeWarBorders.Count > 0 && showBorders)
-            {
-                List<int> warPixels = new List<int>();
-                for (int i = 0; i < pixelBuffer.Length; i++)
-                    if (ColorsEqual(pixelBuffer[i], activeWarBorderColor)) warPixels.Add(i);
-
-                int[] ddx = { 0, 0, 1, -1 };
-                int[] ddy = { 1, -1, 0, 0 };
-                foreach (int idx in warPixels)
-                {
-                    int px = idx % width, py = idx / width;
-                    for (int d = 0; d < 4; d++)
-                    {
-                        int nx = px + ddx[d], ny = py + ddy[d];
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-                        int ni = ny * width + nx;
-                        if (ColorsEqual(pixelBuffer[ni], borderColor))
-                            pixelBuffer[ni] = activeWarBorderColor;
                     }
                 }
             }
@@ -320,17 +288,36 @@ namespace AgesOfConflict
 
         public Color32 GetBorderColor(Cell[] grid, int x, int y, int width, int height, int ownerId)
         {
-            int[] dx = { 0, 0, 1, -1 };
-            int[] dy = { 1, -1, 0, 0 };
+            if (activeWarBorders.Count == 0)
+                return borderColor;
+            if (IsWarFront(grid, x, y, width, height, ownerId))
+                return activeWarBorderColor;
+
+            // Thicken by one border cell, using ownership rather than previously painted
+            // pixels so full and incremental draws agree and repeated uploads cannot spread red.
+            for (int i = 0; i < 4; i++)
+            {
+                int nx = x + dx[i], ny = y + dy[i];
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                if (IsWarFront(grid, nx, ny, width, height, grid[ny * width + nx].nationId))
+                    return activeWarBorderColor;
+            }
+            return borderColor;
+        }
+
+        private bool IsWarFront(Cell[] grid, int x, int y, int width, int height, int ownerId)
+        {
+            if (ownerId < 0)
+                return false;
             for (int i = 0; i < 4; i++)
             {
                 int nx = x + dx[i], ny = y + dy[i];
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
                 int neighborId = grid[ny * width + nx].nationId;
                 if (neighborId >= 0 && neighborId != ownerId && activeWarBorders.Contains(GetNationPairKey(ownerId, neighborId)))
-                    return activeWarBorderColor;
+                    return true;
             }
-            return borderColor;
+            return false;
         }
 
         private static ulong GetNationPairKey(int firstId, int secondId)
@@ -352,6 +339,12 @@ namespace AgesOfConflict
         {
             if (worldTexture != null && pixelBuffer != null)
             {
+                // Cell updates share the buffer with markers; restore the city overlay last.
+                if (showCities && renderedNations != null)
+                    foreach (Nation nation in renderedNations)
+                        foreach (City city in nation.cities)
+                            DrawCityMarker(city, renderedWidth, renderedHeight);
+
                 worldTexture.SetPixels32(pixelBuffer);
                 worldTexture.Apply(false);
             }
@@ -363,9 +356,5 @@ namespace AgesOfConflict
             if (displayMaterial != null) Destroy(displayMaterial);
         }
 
-        private static bool ColorsEqual(Color32 a, Color32 b)
-        {
-            return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
-        }
     }
 }

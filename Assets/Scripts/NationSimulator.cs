@@ -73,6 +73,11 @@ namespace AgesOfConflict
                 nations[n].upkeepPerSec = 0f;
             }
 
+            RebuildBorders();
+        }
+
+        public void RebuildBorders()
+        {
             BuildBorders();
             BuildFrontiers();
         }
@@ -207,8 +212,7 @@ namespace AgesOfConflict
             if (!anyExpanded)
                 return false;
 
-            BuildBorders();
-            BuildFrontiers();
+            RebuildBorders();
             foreach (Nation nation in nations)
                 RenderNation(nation);
 
@@ -241,10 +245,8 @@ namespace AgesOfConflict
             switch (kind)
             {
                 case CellRenderKind.Frontier:
-                    color = worldRenderer.GetBorderColor(grid, x, y, width, height, nation.id);
-                    break;
                 case CellRenderKind.Border:
-                    color = worldRenderer.borderColor;
+                    color = worldRenderer.GetBorderColor(grid, x, y, width, height, nation.id);
                     break;
                 default:
                     color = worldRenderer.GetDisplayColor(nation.id, nation.color);
