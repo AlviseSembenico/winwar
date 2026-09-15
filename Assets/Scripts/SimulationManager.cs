@@ -484,7 +484,9 @@ namespace AgesOfConflict
             float average = (float)distances.Average();
             // Jitter must be baked into the key once per cell; drawing it inside a
             // comparator makes comparisons inconsistent and Sort throws.
-            border = border.OrderByDescending(index => GetConquestScore(index, defenderCapital, average)).ToList();
+            border = border
+                .OrderByDescending(index => GetConquestScore(index, defenderCapital, average, war.attackerId))
+                .ToList();
             for (int i = 0; i < amount; i++)
             {
                 worldGenerator.Grid[border[i]].nationId = (short)war.attackerId;
@@ -520,10 +522,34 @@ namespace AgesOfConflict
             );
         }
 
-        private float GetConquestScore(int cellIndex, Vector2Int defenderCapital, float averageBorderDistance)
+        private float GetConquestScore(
+            int cellIndex,
+            Vector2Int defenderCapital,
+            float averageBorderDistance,
+            int attackerId
+        )
         {
             return (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
-                + Random.Range(0f, averageBorderDistance);
+                + Random.Range(0f, averageBorderDistance)
+                + CountEnemyNeighbours(cellIndex, attackerId) * 100f;
+        }
+
+        // Counts adjacent cells belonging to the specified enemy, including diagonals.
+        private int CountEnemyNeighbours(int cellIndex, int enemyId)
+        {
+            Vector2Int position = worldGenerator.IndexToVec2(cellIndex);
+            int enemyNeighbours = 0;
+            for (int direction = 0; direction < frontDx.Length; direction++)
+            {
+                int x = position.x + frontDx[direction];
+                int y = position.y + frontDy[direction];
+                if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                    continue;
+                if (worldGenerator.Grid[y * worldGenerator.width + x].nationId == enemyId)
+                    enemyNeighbours++;
+            }
+
+            return enemyNeighbours;
         }
 
         private void RefreshWarBorderHighlight()
