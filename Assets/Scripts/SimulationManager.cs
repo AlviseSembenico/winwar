@@ -476,7 +476,6 @@ namespace AgesOfConflict
             Nation defender = worldGenerator.Nations[war.defenderId];
             Nation attacker = worldGenerator.Nations[war.attackerId];
             var defenderCapital = defender.capital;
-            var attackCapital = attacker.capital;
             // map border to their distance to the defender capital
             var distances = border
                 .Select(index => (worldGenerator.IndexToVec2(index) - defenderCapital).sqrMagnitude)
@@ -486,9 +485,7 @@ namespace AgesOfConflict
             // Jitter must be baked into the key once per cell; drawing it inside a
             // comparator makes comparisons inconsistent and Sort throws.
             border = border
-                .OrderByDescending(index =>
-                    (worldGenerator.IndexToVec2(index) - defenderCapital).sqrMagnitude + Random.Range(0, average)
-                )
+                .OrderByDescending(index => GetConquestScore(index, defenderCapital, average))
                 .ToList();
             for (int i = 0; i < amount; i++)
             {
@@ -500,6 +497,19 @@ namespace AgesOfConflict
                 defender.border.Remove(border[i]);
                 defender.frontier.Remove(border[i]);
             }
+            // A city changes hands only when its own cell is captured.
+            // Iterate backwards because transferring removes it from the defender's list.
+            for (int i = defender.cities.Count - 1; i >= 0; i--)
+            {
+                City city = defender.cities[i];
+                int cityIndex = city.position.y * worldGenerator.width + city.position.x;
+                if (worldGenerator.Grid[cityIndex].nationId != war.attackerId)
+                    continue;
+
+                defender.cities.RemoveAt(i);
+                city.nationId = war.attackerId;
+                attacker.cities.Add(city);
+            }
             // Reuse the existing renderer so neighbouring borders and city markers
             // are refreshed too, rather than just painting over the captured pixels.
             worldRenderer?.RenderWorld(
@@ -508,6 +518,12 @@ namespace AgesOfConflict
                 worldGenerator.width,
                 worldGenerator.height
             );
+        }
+
+        private float GetConquestScore(int cellIndex, Vector2Int defenderCapital, float averageBorderDistance)
+        {
+            return (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
+                + Random.Range(0f, averageBorderDistance);
         }
 
         private void RefreshWarBorderHighlight()
