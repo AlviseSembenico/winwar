@@ -105,7 +105,8 @@ namespace AgesOfConflict
                 float rowWidth = viewport.width - 22f;
                 float contentHeight = 0f;
                 foreach (var tip in page.tips)
-                    contentHeight += GetRowHeight(tip.text, rowWidth) + 6f;
+                    contentHeight += GetRowHeight(tip.text, rowWidth) + 4f;
+                contentHeight = Mathf.Max(0f, contentHeight - 4f);
 
                 scrollPosition = GUI.BeginScrollView(
                     viewport,
@@ -117,9 +118,9 @@ namespace AgesOfConflict
                 {
                     float rowHeight = GetRowHeight(tip.text, rowWidth);
                     DrawPanel(new Rect(0f, top, rowWidth, rowHeight), new Color(0.085f, 0.12f, 0.17f));
-                    GUI.Label(new Rect(14f, top + 9f, 154f, rowHeight - 18f), tip.label, labelStyle);
-                    GUI.Label(new Rect(176f, top + 9f, rowWidth - 190f, rowHeight - 18f), tip.text, textStyle);
-                    top += rowHeight + 6f;
+                    GUI.Label(new Rect(14f, top + 8f, 154f, rowHeight - 16f), tip.label, labelStyle);
+                    GUI.Label(new Rect(176f, top + 8f, rowWidth - 190f, rowHeight - 16f), tip.text, textStyle);
+                    top += rowHeight + 4f;
                 }
                 GUI.EndScrollView();
 
@@ -159,7 +160,7 @@ namespace AgesOfConflict
 
         private float GetRowHeight(string text, float width)
         {
-            return Mathf.Max(38f, textStyle.CalcHeight(new GUIContent(text), width - 190f) + 18f);
+            return Mathf.Max(34f, textStyle.CalcHeight(new GUIContent(text), width - 190f) + 16f);
         }
 
         private static void DrawPanel(Rect rect, Color color)
@@ -243,7 +244,7 @@ namespace AgesOfConflict
                     ("Declare war", "Right-click a rival, choose the percentage of your army to commit, then press Attack."),
                     ("Mobilize", "The blue marker travels from a friendly city through your land to the enemy border."),
                     ("Awaiting route", "Combat waits for a reachable shared border; armies cannot cross sea or third-party land."),
-                    ("Two percentages", "Army share × front share = fighting force: 10,000 people × 20% army × 50% front = 1,000."),
+                    ("Two percentages", "Force = population × army share × front share; 10,000 × 20% × 50% = 1,000 soldiers."),
                     ("Defend", "Defenders commit automatically; use the war sliders to adjust your share on each front."),
                     ("Multiple fronts", "Changing a war's allocation redistributes the remaining army percentage across other wars."),
                     ("Break through", "Aim above 1.5× the defending force; a larger advantage increases your advance speed."),
@@ -273,6 +274,7 @@ namespace AgesOfConflict
                     ("Confirm or cancel", "Left-click the map to build; right-click or press Esc to cancel the draft."),
                     ("Wall price", $"A wall costs {simulation.wallCostPerPixel:0.##} gold per unique map cell in the draft; payment happens on confirmation."),
                     ("Breach penalty", $"A city-connected wall costs the attacker {simulation.wallBreachCasualtiesPerPixel:0.##} extra soldiers per captured wall cell."),
+                    ("Hold the line", "A wall cell resists capture if the committed attackers cannot cover its soldier cost."),
                     ("Isolated walls", $"Walls cut off from defending cities have a decaying breach penalty (rate {simulation.isolatedWallCostDecayPerSecond:0.###}/sec).")
                 ),
                 new Page(

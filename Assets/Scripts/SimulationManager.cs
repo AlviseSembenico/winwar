@@ -229,6 +229,7 @@ namespace AgesOfConflict
         {
             if (cameraController == null)
                 return;
+            cameraController.InputBlocked = false;
             cameraController.OnRightClickTap -= HandleRightClickTap;
             cameraController.OnLeftClickTap -= HandleNationSelection;
             cameraController.OnAttackDirectionDragStart -= BeginAttackDirection;
