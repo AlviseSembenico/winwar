@@ -8,24 +8,40 @@ namespace AgesOfConflict
     {
         [Header("Expansion Settings")]
         [Tooltip("Number of expansion attempts each nation makes per simulation tick")]
-        [Range(1, 50)] public int expansionRate = 8;
-        [Tooltip("Simulation ticks between expansion passes. Higher values slow territorial growth without slowing the economy.")]
-        [Range(1, 100)] public int ticksBetweenExpansions = 10;
-        [HideInInspector] public int expansionBoostNationId = -1;
-        [HideInInspector] public int expansionBoostMultiplier = 1;
+        [Range(1, 50)]
+        public int expansionRate = 8;
+
+        [Tooltip(
+            "Simulation ticks between expansion passes. Higher values slow territorial growth without slowing the economy."
+        )]
+        [Range(1, 100)]
+        public int ticksBetweenExpansions = 10;
+
+        [HideInInspector]
+        public int expansionBoostNationId = -1;
+
+        [HideInInspector]
+        public int expansionBoostMultiplier = 1;
 
         [Header("Economy Tuning")]
         [Tooltip("Gold earned per second for each owned pixel")]
         public float incomePerPopulation = 0.1f;
         public float incomePerPixel = 0.1f;
-        public float interestRate= 0.03f;
+        public float interestRate = 0.03f;
         public float upkeepPerArmyPopulation = 0.05f;
 
         [Header("Population Tuning")]
         [Tooltip("People gained per owned pixel each second, until the population cap is reached.")]
-        [Min(0f)] public float populationGrowthPerPopulation = 0.08f;
+        [Min(0f)]
+        public float populationGrowthPerPopulation = 0.08f;
+
         [Tooltip("Maximum population supported by each owned pixel.")]
-        [Min(0f)] public float maximumPopulationPerPixel = 100f;
+        [Min(0f)]
+        public float maximumPopulationPerPixel = 30f;
+
+        [Tooltip("Additional maximum population supported by each owned city.")]
+        [Min(0f)]
+        public float maximumPopulationPerCity = 1_000f;
 
         public int TotalLandCells { get; private set; }
         public int ClaimedLandCells { get; private set; }
@@ -106,7 +122,6 @@ namespace AgesOfConflict
                         nations[ownerId].border.Add(idx);
                 }
             }
-
         }
 
         private void BuildFrontiers()
@@ -116,7 +131,6 @@ namespace AgesOfConflict
                 foreach (int frontier in nations[n].frontier)
                     UpdateClaimedCellRendering(nations[n], frontier, CellRenderKind.Territory);
                 nations[n].frontier.Clear();
-
             }
 
             for (int y = 0; y < height; y++)
@@ -154,7 +168,6 @@ namespace AgesOfConflict
                             candidates.Add(neighborIndex);
                     }
                 }
-
             }
             foreach (int candidate in candidates)
             {
@@ -235,7 +248,6 @@ namespace AgesOfConflict
             return Mathf.Max(1, Mathf.Max(1, ticksBetweenExpansions) / multiplier);
         }
 
-
         private void UpdateClaimedCellRendering(Nation nation, int cellIndex, CellRenderKind kind)
         {
             if (worldRenderer == null)
@@ -260,7 +272,6 @@ namespace AgesOfConflict
             worldRenderer.SetPixelColor(cellIndex, color);
         }
 
-
         public float ComputeStrength(Nation nation)
         {
             return nation == null ? 0f : Mathf.Max(0f, nation.treasury);
@@ -271,7 +282,8 @@ namespace AgesOfConflict
             for (int i = 0; i < nations.Count; i++)
             {
                 Nation nation = nations[i];
-                nation.incomePerSec = nation.civilianPopulation * incomePerPopulation + nation.territorySize * incomePerPixel;
+                nation.incomePerSec =
+                    nation.civilianPopulation * incomePerPopulation + nation.territorySize * incomePerPixel;
                 nation.incomePerSec = nation.incomePerSec * interestRate;
                 nation.upkeepPerSec = nation.armyPopulation * upkeepPerArmyPopulation;
                 nation.treasury += nation.incomePerSec * deltaTime;
@@ -283,8 +295,9 @@ namespace AgesOfConflict
             for (int i = 0; i < nations.Count; i++)
             {
                 Nation nation = nations[i];
-                float populationCap = nation.territorySize * maximumPopulationPerPixel;
-                float growth = Mathf.Max(nation.civilianPopulation,10.0f) * populationGrowthPerPopulation * deltaTime;
+                float populationCap =
+                    nation.territorySize * maximumPopulationPerPixel + nation.cities.Count * maximumPopulationPerCity;
+                float growth = Mathf.Max(nation.civilianPopulation, 10.0f) * populationGrowthPerPopulation * deltaTime;
                 nation.population = Mathf.Min(populationCap, nation.population + growth);
             }
         }
