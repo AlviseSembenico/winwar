@@ -19,11 +19,15 @@ namespace AgesOfConflict
 
         public event Action<Vector3> OnRightClickTap;
         public event Action<Vector3> OnLeftClickTap;
+        public event Action<Vector3> OnShiftLeftDragStart;
+        public event Action<Vector3> OnShiftLeftDrag;
+        public event Action<Vector3> OnShiftLeftDragEnd;
 
         private Camera cam;
         private Vector3 dragOriginWorld, dragStartScreen, targetPosition, panVelocity;
         private float targetZoom;
         private bool dragging, moved;
+        private bool shiftLeftDragging;
         private int mapWidth = 1000, mapHeight = 1000;
 
         private void Awake()
@@ -75,10 +79,36 @@ namespace AgesOfConflict
         private bool Button(int button) => Input.GetMouseButton(button);
         private bool ButtonUp(int button) => Input.GetMouseButtonUp(button);
 
+        private bool IsShiftPressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Keyboard.current != null)
+                return UnityEngine.InputSystem.Keyboard.current.shiftKey.isPressed;
+#endif
+            return Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        }
+
         private void HandleMouse()
         {
             Vector3 mouse = MousePosition();
-            if (ButtonDown(0)) OnLeftClickTap?.Invoke(cam.ScreenToWorldPoint(mouse));
+            Vector3 worldMouse = cam.ScreenToWorldPoint(mouse);
+            if (ButtonDown(0))
+            {
+                if (IsShiftPressed())
+                {
+                    shiftLeftDragging = true;
+                    OnShiftLeftDragStart?.Invoke(worldMouse);
+                }
+                else
+                    OnLeftClickTap?.Invoke(worldMouse);
+            }
+            if (shiftLeftDragging && Button(0))
+                OnShiftLeftDrag?.Invoke(worldMouse);
+            if (shiftLeftDragging && ButtonUp(0))
+            {
+                OnShiftLeftDragEnd?.Invoke(worldMouse);
+                shiftLeftDragging = false;
+            }
             if (ButtonDown(1) || ButtonDown(2)) { dragStartScreen = mouse; dragOriginWorld = cam.ScreenToWorldPoint(mouse); dragging = true; moved = false; }
             if (dragging && (Button(1) || Button(2)))
             {

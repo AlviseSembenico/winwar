@@ -62,6 +62,14 @@ namespace AgesOfConflict
         private string commandMessage;
         private string attackPercentage = "10";
         private readonly List<War> wars = new List<War>();
+        private readonly List<AttackDirection> attackDirections = new List<AttackDirection>();
+        private AttackDirection inProgressAttackDirection;
+        private bool attackDirectionGestureCancelled;
+        private float attackDirectionBannerExpiry;
+        private string attackDirectionBanner;
+        private bool warRoutesDirty;
+        private Rect warsPanelRect;
+        private Vector2 warsScrollPosition;
 
         public class War
         {
@@ -69,6 +77,11 @@ namespace AgesOfConflict
             public int defenderId;
             public float casualtyProgress;
             public float attackingPercentage;
+            public float defendingPercentage;
+            public bool combatStarted;
+            public float routeRetryTime;
+            public WarMobilization mobilization = new WarMobilization();
+            public Vector2? connectionEndpoint;
             public readonly List<WarFlag> flags = new List<WarFlag>();
         }
 
@@ -78,6 +91,11 @@ namespace AgesOfConflict
             public int nationId;
             public Vector2 position;
             public Color color;
+        }
+
+        private class AttackDirection
+        {
+            public readonly List<Vector2> points = new List<Vector2>();
         }
 
         private struct FlagTarget
@@ -100,6 +118,9 @@ namespace AgesOfConflict
             {
                 cameraController.OnRightClickTap += HandleRightClickTap;
                 cameraController.OnLeftClickTap += HandleNationSelection;
+                cameraController.OnShiftLeftDragStart += BeginAttackDirection;
+                cameraController.OnShiftLeftDrag += ContinueAttackDirection;
+                cameraController.OnShiftLeftDragEnd += EndAttackDirection;
             }
             Regenerate();
         }
@@ -110,6 +131,9 @@ namespace AgesOfConflict
                 return;
             cameraController.OnRightClickTap -= HandleRightClickTap;
             cameraController.OnLeftClickTap -= HandleNationSelection;
+            cameraController.OnShiftLeftDragStart -= BeginAttackDirection;
+            cameraController.OnShiftLeftDrag -= ContinueAttackDirection;
+            cameraController.OnShiftLeftDragEnd -= EndAttackDirection;
         }
 
         private void HandleNationSelection(Vector3 worldPos)
@@ -195,6 +219,194 @@ namespace AgesOfConflict
             return null;
         }
 
+        private void BeginAttackDirection(Vector3 worldPos)
+        {
+            inProgressAttackDirection = null;
+            attackDirectionGestureCancelled = false;
+            if (IsPointerOverAttackDirectionUi())
+            {
+                attackDirectionGestureCancelled = true;
+                return;
+            }
+
+            if (TryRemoveAttackDirectionAt(worldPos))
+            {
+                attackDirectionGestureCancelled = true;
+                return;
+            }
+
+            if (!CanStartAttackDirection(worldPos, out string reason))
+            {
+                CancelAttackDirection(reason);
+                return;
+            }
+
+            inProgressAttackDirection = new AttackDirection();
+            inProgressAttackDirection.points.Add(new Vector2(worldPos.x, worldPos.y));
+        }
+
+        private void ContinueAttackDirection(Vector3 worldPos)
+        {
+            if (attackDirectionGestureCancelled || inProgressAttackDirection == null)
+                return;
+
+            Vector2 point = new Vector2(worldPos.x, worldPos.y);
+            Vector2 previous = inProgressAttackDirection.points[inProgressAttackDirection.points.Count - 1];
+            if (!IsMeaningfulScreenDistance(previous, point, 2f))
+                return;
+
+            if (!CanContinueAttackDirection(previous, point, out string reason))
+            {
+                CancelAttackDirection(reason);
+                return;
+            }
+
+            inProgressAttackDirection.points.Add(point);
+        }
+
+        private void EndAttackDirection(Vector3 worldPos)
+        {
+            ContinueAttackDirection(worldPos);
+            if (attackDirectionGestureCancelled || inProgressAttackDirection == null)
+                return;
+
+            if (GetAttackDirectionScreenLength(inProgressAttackDirection) >= 8f)
+                attackDirections.Add(inProgressAttackDirection);
+            inProgressAttackDirection = null;
+        }
+
+        private bool CanStartAttackDirection(Vector3 worldPos, out string reason)
+        {
+            reason = null;
+            if (selectedNation == null)
+            {
+                reason = "Attack direction cancelled: select a controlled nation first.";
+                return false;
+            }
+            if (!TryGetCell(worldPos, out Cell cell) || !cell.HasOwner)
+            {
+                reason = "Attack direction cancelled: must start on owned land.";
+                return false;
+            }
+            if (cell.nationId != selectedNation.id)
+            {
+                reason = "Attack direction cancelled: must start in controlled territory.";
+                return false;
+            }
+            return true;
+        }
+
+        private bool CanContinueAttackDirection(Vector2 from, Vector2 to, out string reason)
+        {
+            reason = null;
+            int steps = Mathf.Max(
+                1,
+                Mathf.CeilToInt(Mathf.Max(Mathf.Abs(to.x - from.x), Mathf.Abs(to.y - from.y)) * 2f)
+            );
+            for (int step = 1; step <= steps; step++)
+            {
+                Vector2 point = Vector2.Lerp(from, to, step / (float)steps);
+                if (!TryGetCell(new Vector3(point.x, point.y), out Cell cell) || !cell.HasOwner)
+                {
+                    reason = "Attack direction cancelled: cannot draw over sea or unclaimed land.";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void CancelAttackDirection(string reason)
+        {
+            inProgressAttackDirection = null;
+            attackDirectionGestureCancelled = true;
+            attackDirectionBanner = reason;
+            attackDirectionBannerExpiry = Time.unscaledTime + 2.5f;
+        }
+
+        private bool IsPointerOverAttackDirectionUi()
+        {
+            Vector3 mouse = Input.mousePosition;
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Mouse.current != null)
+            {
+                Vector2 position = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
+                mouse = new Vector3(position.x, position.y);
+            }
+#endif
+            Vector2 pointer = new Vector2(mouse.x, Screen.height - mouse.y);
+            if (new Rect(15, 15, 280, 405).Contains(pointer))
+                return true;
+            if (pointer.x >= Screen.width - 285)
+                return true;
+            if (!showContextMenu)
+                return false;
+            bool warMenu = contextNation != null && selectedNation != null && contextNation.id != selectedNation.id;
+            float width = warMenu ? 250f : 230f;
+            float height = warMenu ? 140f : 215f;
+            float x = Mathf.Clamp(contextMenuScreenPos.x, 10, Screen.width - width - 10);
+            float y = Mathf.Clamp(contextMenuScreenPos.y, 10, Screen.height - height - 10);
+            return new Rect(x, y, width, height).Contains(pointer);
+        }
+
+        private bool TryRemoveAttackDirectionAt(Vector3 worldPos)
+        {
+            if (mainCam == null)
+                return false;
+            Vector2 pointer = WorldToGuiPoint(new Vector2(worldPos.x, worldPos.y));
+            int closestArrow = -1;
+            float closestDistance = 12f;
+            for (int i = 0; i < attackDirections.Count; i++)
+            {
+                List<Vector2> points = attackDirections[i].points;
+                for (int point = 1; point < points.Count; point++)
+                {
+                    float distance = DistanceToSegment(
+                        pointer,
+                        WorldToGuiPoint(points[point - 1]),
+                        WorldToGuiPoint(points[point])
+                    );
+                    if (distance < closestDistance)
+                    {
+                        closestDistance = distance;
+                        closestArrow = i;
+                    }
+                }
+            }
+            if (closestArrow < 0)
+                return false;
+            attackDirections.RemoveAt(closestArrow);
+            return true;
+        }
+
+        private bool IsMeaningfulScreenDistance(Vector2 from, Vector2 to, float minimumPixels)
+        {
+            return Vector2.Distance(WorldToGuiPoint(from), WorldToGuiPoint(to)) >= minimumPixels;
+        }
+
+        private float GetAttackDirectionScreenLength(AttackDirection direction)
+        {
+            float length = 0f;
+            for (int i = 1; i < direction.points.Count; i++)
+                length += Vector2.Distance(WorldToGuiPoint(direction.points[i - 1]), WorldToGuiPoint(direction.points[i]));
+            return length;
+        }
+
+        private Vector2 WorldToGuiPoint(Vector2 worldPos)
+        {
+            Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(worldPos.x, worldPos.y));
+            return new Vector2(screen.x, Screen.height - screen.y);
+        }
+
+        private static float DistanceToSegment(Vector2 point, Vector2 from, Vector2 to)
+        {
+            Vector2 segment = to - from;
+            float lengthSquared = segment.sqrMagnitude;
+            if (lengthSquared <= Mathf.Epsilon)
+                return Vector2.Distance(point, from);
+            float position = Mathf.Clamp01(Vector2.Dot(point - from, segment) / lengthSquared);
+            return Vector2.Distance(point, from + segment * position);
+        }
+
         private void Update()
         {
             HandleHotkeys();
@@ -206,8 +418,7 @@ namespace AgesOfConflict
                 {
                     tickTimer -= tickInterval;
                     ConfigureSelectedNationExpansionBoost();
-                    nationSimulator.StepSimulation(tickInterval);
-                    AdvanceWars(tickInterval);
+                    StepWorldSimulation();
                 }
             }
         }
@@ -219,6 +430,13 @@ namespace AgesOfConflict
             nationSimulator.expansionBoostNationId =
                 selectedNationGrowsFaster && selectedNation != null ? selectedNation.id : -1;
             nationSimulator.expansionBoostMultiplier = 2;
+        }
+
+        private void StepWorldSimulation()
+        {
+            if (nationSimulator?.StepSimulation(tickInterval) == true)
+                warRoutesDirty = true;
+            AdvanceWars(tickInterval);
         }
 
         private void HandleHotkeys()
@@ -234,8 +452,7 @@ namespace AgesOfConflict
             if (Input.GetKeyDown(KeyCode.S) && !isRunning)
             {
                 ConfigureSelectedNationExpansionBoost();
-                nationSimulator?.StepSimulation(tickInterval);
-                AdvanceWars(tickInterval);
+                StepWorldSimulation();
             }
             if (Input.GetKeyDown(KeyCode.R))
                 Regenerate();
@@ -272,6 +489,10 @@ namespace AgesOfConflict
             selectedCity = null;
             commandMessage = null;
             wars.Clear();
+            attackDirections.Clear();
+            inProgressAttackDirection = null;
+            attackDirectionGestureCancelled = false;
+            warRoutesDirty = false;
             worldGenerator.GenerateWorld();
             currentSeed = worldGenerator.seed;
             activeNations = worldGenerator.Nations.Count;
@@ -299,19 +520,21 @@ namespace AgesOfConflict
         {
             if (worldGenerator == null)
                 return;
+            DrawAttackDirections();
+            DrawWarFronts();
             DrawControlPanel();
             DrawRightPanel();
             if (showContextMenu)
                 DrawCityContextMenu();
-            DrawWarFronts();
             if (!string.IsNullOrEmpty(commandMessage))
                 GUI.Box(new Rect(Screen.width / 2f - 190, 15, 380, 30), commandMessage);
+            DrawAttackDirectionBanner();
         }
 
         private void DrawControlPanel()
         {
-            GUI.Box(new Rect(15, 15, 280, 365), "Ages of Conflict - Simulation");
-            GUILayout.BeginArea(new Rect(25, 40, 260, 330));
+            GUI.Box(new Rect(15, 15, 280, 405), "Ages of Conflict - Simulation");
+            GUILayout.BeginArea(new Rect(25, 40, 260, 370));
             GUILayout.Label($"<b>Resolution:</b> {worldGenerator.width} x {worldGenerator.height}");
             GUILayout.Label($"<b>Seed:</b> {currentSeed} | <b>Nations:</b> {activeNations}");
             GUILayout.Label(
@@ -339,8 +562,7 @@ namespace AgesOfConflict
             if (GUILayout.Button("Step [S]", GUILayout.Height(30), GUILayout.Width(75)))
             {
                 ConfigureSelectedNationExpansionBoost();
-                nationSimulator?.StepSimulation(tickInterval);
-                AdvanceWars(tickInterval);
+                StepWorldSimulation();
             }
             GUI.enabled = true;
             GUILayout.EndHorizontal();
@@ -352,6 +574,8 @@ namespace AgesOfConflict
             GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan");
             GUILayout.Label("• <b>LMB</b>: Select nation or city");
             GUILayout.Label("• <b>RMB</b>: Build cities in selected territory");
+            GUILayout.Label("• <b>Shift + drag</b>: Draw attack direction");
+            GUILayout.Label("• <b>Shift + click</b> an arrow: Remove it");
             GUILayout.Label("• Territory expands automatically");
             GUILayout.EndArea();
         }
@@ -396,11 +620,144 @@ namespace AgesOfConflict
                 attackingPercentage = percentage,
             };
             wars.Add(newWar);
-            RefreshWarFlags(newWar);
+            SetWarPercentage(newWar, newWar.attackerId, percentage);
+            int defendingFronts = wars.Count(war =>
+                war.attackerId == newWar.defenderId || war.defenderId == newWar.defenderId
+            );
+            SetWarPercentage(newWar, newWar.defenderId, 100f / defendingFronts);
+            PlanMobilization(newWar);
+            commandMessage =
+                newWar.mobilization.path.Count > 0
+                    ? $"{selectedNation.name} is mobilizing against {contextNation.name}."
+                    : "War declared. Waiting for a reachable front from a friendly city.";
+        }
+
+        private bool IsMobilizationFront(War war, int cell)
+        {
+            return worldGenerator.Grid.IsFrontierWith(
+                cell % worldGenerator.width,
+                cell / worldGenerator.width,
+                worldGenerator.width,
+                worldGenerator.height,
+                war.defenderId
+            );
+        }
+
+        private bool CanMobilizeThrough(War war, int cell)
+        {
+            return worldGenerator.Grid[cell].IsLand && worldGenerator.Grid[cell].nationId == war.attackerId;
+        }
+
+        private void PlanMobilization(War war, int currentCell = -1)
+        {
+            var origins = new List<int>();
+            if (currentCell >= 0 && CanMobilizeThrough(war, currentCell))
+                origins.Add(currentCell);
+            else
+                foreach (City city in worldGenerator.Nations[war.attackerId].cities)
+                    if (city.nationId == war.attackerId)
+                        origins.Add(city.position.y * worldGenerator.width + city.position.x);
+
+            war.mobilization.Plan(
+                worldGenerator.width,
+                worldGenerator.height,
+                origins,
+                cell => CanMobilizeThrough(war, cell),
+                cell => IsMobilizationFront(war, cell)
+            );
+            war.routeRetryTime = 0f;
+        }
+
+        private void AdvanceMobilization(War war, float deltaTime)
+        {
+            float expansionInterval =
+                tickInterval
+                * (nationSimulator != null ? nationSimulator.GetExpansionIntervalTicks(war.attackerId) : 10);
+            List<int> path = war.mobilization.path;
+            if (path.Count == 0)
+            {
+                // Avoid searching the whole country every tick while waiting for contact.
+                war.routeRetryTime += deltaTime;
+                if (war.routeRetryTime < expansionInterval)
+                    return;
+                PlanMobilization(war);
+            }
+            else
+            {
+                int current = war.mobilization.CurrentPathIndex;
+                bool valid =
+                    IsMobilizationFront(war, path[path.Count - 1])
+                    && war.mobilization.CanFollowRemainingPath(cell => CanMobilizeThrough(war, cell));
+                if (!valid)
+                    PlanMobilization(war, path[current]);
+            }
+
+            war.mobilization.Advance(deltaTime, expansionInterval);
+            if (!war.mobilization.HasArrived)
+                return;
+
+            war.combatStarted = true;
+            // Leave the completed route in place. Subsequent map changes reconnect it
+            // from the closest city to the updated front's center without animating again.
+            RefreshWarFlags(war);
             RefreshWarBorderHighlight();
-            commandMessage = HaveSharedBorder(selectedNation.id, contextNation.id)
-                ? $"{selectedNation.name} attacked {contextNation.name}."
-                : $"War declared. The front will form when the nations share a border.";
+            commandMessage = $"{worldGenerator.Nations[war.attackerId].name} reached the front. Battle begins.";
+        }
+
+        private void RefreshWarConnections()
+        {
+            if (!warRoutesDirty)
+                return;
+            warRoutesDirty = false;
+            foreach (War war in wars)
+            {
+                if (!war.combatStarted)
+                    continue;
+
+                List<int> front = FindDefenderBorderCells(war.attackerId, war.defenderId);
+                // Keep the last connection if contact is temporarily lost. Only ending
+                // the war removes the line; a future territory change will retry it.
+                if (front.Count == 0)
+                    continue;
+                int center = front[front.Count / 2];
+                int x = center % worldGenerator.width,
+                    y = center / worldGenerator.width;
+                var targets = new HashSet<int>();
+                for (int direction = 0; direction < 4; direction++)
+                {
+                    int nx = x + frontDx[direction],
+                        ny = y + frontDy[direction];
+                    if (nx < 0 || nx >= worldGenerator.width || ny < 0 || ny >= worldGenerator.height)
+                        continue;
+                    int cell = ny * worldGenerator.width + nx;
+                    if (CanMobilizeThrough(war, cell))
+                        targets.Add(cell);
+                }
+
+                var origins = new List<int>();
+                foreach (City city in worldGenerator.Nations[war.attackerId].cities)
+                    if (city.nationId == war.attackerId)
+                        origins.Add(city.position.y * worldGenerator.width + city.position.x);
+
+                // Re-select the closest city by actual route length, including captured
+                // or newly built cities. Plan separately so failure never erases the line.
+                var connection = new WarMobilization();
+                if (
+                    !connection.Plan(
+                        worldGenerator.width,
+                        worldGenerator.height,
+                        origins,
+                        cell => CanMobilizeThrough(war, cell),
+                        cell => targets.Contains(cell)
+                    )
+                )
+                    continue;
+
+                connection.Complete();
+                war.mobilization = connection;
+                int end = connection.path[connection.path.Count - 1];
+                war.connectionEndpoint = (GetCellCenter(end) + GetCellCenter(center)) * 0.5f;
+            }
         }
 
         private void UpdateWarUI(War war)
@@ -420,8 +777,10 @@ namespace AgesOfConflict
 
         private void RemoveWar(War war)
         {
+            SetWarPercentage(war, war.attackerId, 0f);
+            SetWarPercentage(war, war.defenderId, 0f);
             wars.Remove(war);
-            // Troops remain part of the population; ending a war frees them for defense.
+            // Troops stay in the population and are shared equally across remaining fronts.
         }
 
         private void AdvanceWars(float deltaTime)
@@ -430,18 +789,38 @@ namespace AgesOfConflict
             for (int i = wars.Count - 1; i >= 0; i--)
             {
                 War war = wars[i];
-                UpdateWarUI(war);
-
-                ApplyWarCasualties(war, deltaTime);
-                float attackingForce = GetAttackingForce(war);
-                float defendingForce = GetDefendingForce(war);
-                // remove war if the
-                if (attackingForce < 1f)
+                if (
+                    worldGenerator.Nations[war.attackerId].territorySize <= 0
+                    || worldGenerator.Nations[war.defenderId].territorySize <= 0
+                    || worldGenerator.Nations[war.attackerId].armyPopulation < 1f
+                )
                 {
                     RemoveWar(war);
                     warsChanged = true;
                     continue;
                 }
+                // A zero allocation pauses the assault; only "Cancel war" declares peace.
+                if (GetAttackingForce(war) < 1f)
+                    continue;
+                if (!war.combatStarted)
+                {
+                    AdvanceMobilization(war, deltaTime);
+                    continue;
+                }
+                // Contact can be lost to another war. Never inflict casualties across a gap.
+                if (!HaveSharedBorder(war.attackerId, war.defenderId))
+                {
+                    war.casualtyProgress = 0f;
+                    war.flags.Clear();
+                    continue;
+                }
+                UpdateWarUI(war);
+
+                ApplyWarCasualties(war, deltaTime);
+                float attackingForce = GetAttackingForce(war);
+                float defendingForce = GetDefendingForce(war);
+                if (attackingForce < 1f)
+                    continue;
 
                 var attackerCities = findCities(FindDefenderBorderCells(war.defenderId, war.attackerId), 3f);
                 // An assault only advances with at least a 50% force advantage.
@@ -463,6 +842,7 @@ namespace AgesOfConflict
             }
             if (warsChanged)
                 RefreshWarBorderHighlight();
+            RefreshWarConnections();
         }
 
         // the border is of defender
@@ -471,6 +851,7 @@ namespace AgesOfConflict
             amount = Mathf.Clamp(amount, 0, border.Count);
             if (amount == 0)
                 return;
+            warRoutesDirty = true;
 
             // conquer the amount that are the further from the capital of the defending team.
             Nation defender = worldGenerator.Nations[war.defenderId];
@@ -558,7 +939,8 @@ namespace AgesOfConflict
                 return;
             List<Vector2Int> nationPairs = new List<Vector2Int>(wars.Count);
             foreach (War war in wars)
-                nationPairs.Add(new Vector2Int(war.attackerId, war.defenderId));
+                if (war.combatStarted)
+                    nationPairs.Add(new Vector2Int(war.attackerId, war.defenderId));
             worldRenderer.SetActiveWarBorders(nationPairs);
         }
 
@@ -608,17 +990,30 @@ namespace AgesOfConflict
 
         private float GetDefendingForce(War war)
         {
+            if (!war.combatStarted)
+                return 0f;
             Nation defender = worldGenerator.Nations[war.defenderId];
-            float availableDefenders = defender.armyPopulation;
-            foreach (War outgoingWar in wars)
-                if (outgoingWar.attackerId == defender.id)
-                    availableDefenders -= GetAttackingForce(outgoingWar);
-            availableDefenders = Mathf.Max(0f, availableDefenders);
-            float totalIncomingForce = 0f;
-            foreach (War incomingWar in wars)
-                if (incomingWar.defenderId == defender.id)
-                    totalIncomingForce += GetAttackingForce(incomingWar);
-            return totalIncomingForce <= 0f ? 0f : availableDefenders * GetAttackingForce(war) / totalIncomingForce;
+            return defender.armyPopulation * Mathf.Clamp(war.defendingPercentage, 0f, 100f) / 100f;
+        }
+
+        private float GetWarPercentage(War war, int nationId)
+        {
+            return war.attackerId == nationId ? war.attackingPercentage : war.defendingPercentage;
+        }
+
+        private void SetWarPercentage(War target, int nationId, float percentage)
+        {
+            List<War> fronts = wars.FindAll(war => war.attackerId == nationId || war.defenderId == nationId);
+            int index = fronts.IndexOf(target);
+            if (index < 0)
+                return;
+            List<float> percentages = fronts.Select(war => GetWarPercentage(war, nationId)).ToList();
+            WarAllocation.SetPercentage(percentages, index, percentage);
+            for (int i = 0; i < fronts.Count; i++)
+                if (fronts[i].attackerId == nationId)
+                    fronts[i].attackingPercentage = percentages[i];
+                else
+                    fronts[i].defendingPercentage = percentages[i];
         }
 
         private bool HaveSharedBorder(int first, int second) => FindDefenderBorderCells(first, second).Count > 0;
@@ -827,6 +1222,9 @@ namespace AgesOfConflict
                 return;
             foreach (War war in wars)
             {
+                DrawMobilization(war);
+                if (!war.combatStarted)
+                    continue;
                 // Labels derive directly from the current border, never from a flag.
                 if (TryGetWarLabelPositions(war, out Vector2 attackerLabel, out Vector2 defenderLabel))
                 {
@@ -842,6 +1240,128 @@ namespace AgesOfConflict
                     );
                 }
             }
+        }
+
+        private void DrawAttackDirections()
+        {
+            if (mainCam == null)
+                return;
+            Color blue = new Color(0.15f, 0.6f, 1f, 1f);
+            foreach (AttackDirection direction in attackDirections)
+                DrawAttackDirection(direction, blue);
+            if (inProgressAttackDirection != null)
+                DrawAttackDirection(inProgressAttackDirection, new Color(blue.r, blue.g, blue.b, 0.75f));
+        }
+
+        private void DrawAttackDirection(AttackDirection direction, Color color)
+        {
+            if (direction.points.Count < 2)
+                return;
+            for (int i = 1; i < direction.points.Count; i++)
+                DrawMapLine(direction.points[i - 1], direction.points[i], color, 3f);
+
+            Vector2 tip = WorldToGuiPoint(direction.points[direction.points.Count - 1]);
+            Vector2 previous = WorldToGuiPoint(direction.points[direction.points.Count - 2]);
+            Vector2 heading = tip - previous;
+            if (heading.sqrMagnitude < 0.01f)
+                return;
+            heading.Normalize();
+            Vector2 backward = -heading;
+            Vector2 perpendicular = new Vector2(-heading.y, heading.x);
+            DrawGuiLine(tip, tip + (backward + perpendicular * 0.65f) * 12f, color, 4f);
+            DrawGuiLine(tip, tip + (backward - perpendicular * 0.65f) * 12f, color, 4f);
+        }
+
+        private void DrawGuiLine(Vector2 from, Vector2 to, Color color, float thickness)
+        {
+            Vector2 direction = to - from;
+            if (direction.sqrMagnitude < 0.01f)
+                return;
+            Matrix4x4 previousMatrix = GUI.matrix;
+            Color previousColor = GUI.color;
+            GUI.color = color;
+            GUIUtility.RotateAroundPivot(Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg, from);
+            GUI.DrawTexture(
+                new Rect(from.x, from.y - thickness / 2f, direction.magnitude, thickness),
+                Texture2D.whiteTexture
+            );
+            GUI.matrix = previousMatrix;
+            GUI.color = previousColor;
+        }
+
+        private void DrawAttackDirectionBanner()
+        {
+            if (string.IsNullOrEmpty(attackDirectionBanner) || Time.unscaledTime > attackDirectionBannerExpiry)
+                return;
+            const float width = 360f;
+            GUI.Box(
+                new Rect(Screen.width / 2f - width / 2f, 52f, width, 26f),
+                attackDirectionBanner
+            );
+        }
+
+        private void DrawMobilization(War war)
+        {
+            List<int> path = war.mobilization.path;
+            if (path.Count == 0)
+                return;
+            Color blue = new Color(0.15f, 0.6f, 1f, 1f);
+            for (int i = 1; i < path.Count; i++)
+            {
+                Vector2 start = GetCellCenter(path[i - 1]);
+                Vector2 end = GetCellCenter(path[i]);
+                DrawMapLine(start, end, new Color(blue.r, blue.g, blue.b, 0.3f), 2f);
+                float traveled = war.mobilization.GetSegmentProgress(i - 1);
+                if (traveled > 0f)
+                    DrawMapLine(start, Vector2.Lerp(start, end, traveled), blue, 4f);
+            }
+
+            int headIndex = war.mobilization.CurrentPathIndex;
+            Vector2 head = GetCellCenter(path[headIndex]);
+            if (headIndex + 1 < path.Count)
+                head = Vector2.Lerp(
+                    head,
+                    GetCellCenter(path[headIndex + 1]),
+                    war.mobilization.GetSegmentProgress(headIndex)
+                );
+            if (war.combatStarted && war.connectionEndpoint.HasValue)
+            {
+                DrawMapLine(head, war.connectionEndpoint.Value, blue, 4f);
+                head = war.connectionEndpoint.Value;
+            }
+            Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(head.x, head.y, 0f));
+            if (screen.z <= 0f)
+                return;
+            Color previous = GUI.color;
+            GUI.color = blue;
+            GUI.DrawTexture(new Rect(screen.x - 4f, Screen.height - screen.y - 4f, 8f, 8f), Texture2D.whiteTexture);
+            GUI.color = previous;
+        }
+
+        private Vector2 GetCellCenter(int cell)
+        {
+            return new Vector2(cell % worldGenerator.width + 0.5f, cell / worldGenerator.width + 0.5f);
+        }
+
+        private void DrawMapLine(Vector2 start, Vector2 end, Color color, float thickness)
+        {
+            Vector3 a = mainCam.WorldToScreenPoint(new Vector3(start.x, start.y, 0f));
+            Vector3 b = mainCam.WorldToScreenPoint(new Vector3(end.x, end.y, 0f));
+            if (a.z <= 0f || b.z <= 0f)
+                return;
+            Vector2 from = new Vector2(a.x, Screen.height - a.y);
+            Vector2 to = new Vector2(b.x, Screen.height - b.y);
+            Vector2 direction = to - from;
+            Matrix4x4 previousMatrix = GUI.matrix;
+            Color previousColor = GUI.color;
+            GUI.color = color;
+            GUIUtility.RotateAroundPivot(Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg, from);
+            GUI.DrawTexture(
+                new Rect(from.x, from.y - thickness / 2f, direction.magnitude, thickness),
+                Texture2D.whiteTexture
+            );
+            GUI.matrix = previousMatrix;
+            GUI.color = previousColor;
         }
 
         private bool TryGetWarLabelPositions(War war, out Vector2 attackerLabel, out Vector2 defenderLabel)
@@ -1024,6 +1544,8 @@ namespace AgesOfConflict
                 false
             );
             nation.cities.Add(city);
+            warRoutesDirty = true;
+            RefreshWarConnections();
             worldRenderer.DrawCityMarker(city, worldGenerator.width, worldGenerator.height);
             worldRenderer.ApplyTextureChanges();
         }
@@ -1046,7 +1568,9 @@ namespace AgesOfConflict
                 mouse = new Vector3(position.x, position.y);
             }
 #endif
-            return GetNationPanelRect(nation).Contains(new Vector2(mouse.x, Screen.height - mouse.y));
+            Vector2 pointer = new Vector2(mouse.x, Screen.height - mouse.y);
+            return GetNationPanelRect(nation).Contains(pointer)
+                || (selectedNation != null && warsPanelRect.Contains(pointer));
         }
 
         private void DrawRightPanel()
@@ -1095,29 +1619,46 @@ namespace AgesOfConflict
                 if (war.attackerId == selectedNation.id || war.defenderId == selectedNation.id)
                     activeWars.Add(war);
             if (activeWars.Count == 0)
+            {
+                warsPanelRect = default;
                 return top;
+            }
 
             const int width = 270;
-            int height = 40 + activeWars.Count * 48;
+            int height = Mathf.Min(40 + activeWars.Count * 84, Mathf.Max(100, Screen.height - top - 15));
             float x = Screen.width - 285;
-            GUI.Box(new Rect(x, top, width, height), "⚔ Nations at War");
+            warsPanelRect = new Rect(x, top, width, height);
+            GUI.Box(warsPanelRect, "⚔ Nations at War");
             GUILayout.BeginArea(new Rect(x + 10, top + 25, width - 20, height - 30));
+            warsScrollPosition = GUILayout.BeginScrollView(warsScrollPosition);
             foreach (War war in activeWars)
             {
                 int opponentId = war.attackerId == selectedNation.id ? war.defenderId : war.attackerId;
                 Nation opponent = worldGenerator.Nations[opponentId];
                 GUILayout.BeginHorizontal();
                 float force = war.attackerId == selectedNation.id ? GetAttackingForce(war) : GetDefendingForce(war);
-                GUILayout.Label($"{opponent.name} ({force:F0})", GUILayout.Width(145));
+                string status =
+                    war.combatStarted ? $"{force:F0}"
+                    : war.mobilization.path.Count > 0 ? "Mobilizing"
+                    : "Awaiting route";
+                GUILayout.Label($"{opponent.name} ({status})", GUILayout.ExpandWidth(true));
                 if (GUILayout.Button("Cancel war", GUILayout.Height(24)))
                 {
-                    wars.Remove(war);
+                    RemoveWar(war);
                     RefreshWarBorderHighlight();
                     commandMessage = $"Peace declared with {opponent.name}.";
+                    GUILayout.EndHorizontal();
                     break;
                 }
                 GUILayout.EndHorizontal();
+                float percentage = GetWarPercentage(war, selectedNation.id);
+                GUILayout.Label($"Army committed: {percentage:F1}%");
+                float updatedPercentage = GUILayout.HorizontalSlider(percentage, 0f, 100f);
+                if (!Mathf.Approximately(updatedPercentage, percentage))
+                    SetWarPercentage(war, selectedNation.id, updatedPercentage);
+                GUILayout.Space(6);
             }
+            GUILayout.EndScrollView();
             GUILayout.EndArea();
             return top + height + 10;
         }

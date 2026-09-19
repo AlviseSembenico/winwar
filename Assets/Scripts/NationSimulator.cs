@@ -200,8 +200,7 @@ namespace AgesOfConflict
             for (int i = 0; i < nationIndices.Count; i++)
             {
                 Nation nation = nations[nationIndices[i]];
-                int multiplier = nation.id == expansionBoostNationId ? Mathf.Max(1, expansionBoostMultiplier) : 1;
-                int interval = Mathf.Max(1, Mathf.Max(1, ticksBetweenExpansions) / multiplier);
+                int interval = GetExpansionIntervalTicks(nation.id);
                 if (expansionTicks % interval != 0)
                     continue;
 
@@ -228,6 +227,12 @@ namespace AgesOfConflict
                 UpdateClaimedCellRendering(nation, border, CellRenderKind.Border);
             foreach (int frontier in nation.frontier)
                 UpdateClaimedCellRendering(nation, frontier, CellRenderKind.Frontier);
+        }
+
+        public int GetExpansionIntervalTicks(int nationId)
+        {
+            int multiplier = nationId == expansionBoostNationId ? Mathf.Max(1, expansionBoostMultiplier) : 1;
+            return Mathf.Max(1, Mathf.Max(1, ticksBetweenExpansions) / multiplier);
         }
 
 

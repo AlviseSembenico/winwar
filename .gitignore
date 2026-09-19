@@ -16,6 +16,10 @@
 ExportedObj/
 .consulo/
 *.csproj
+!/Tests/WarMobilization.Tests.csproj
+!/Tests/WarAllocation.Tests.csproj
+/Tests/bin/
+/Tests/obj/
 *.unityproj
 *.sln
 *.slnx
