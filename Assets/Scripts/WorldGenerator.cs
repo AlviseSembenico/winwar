@@ -6,25 +6,38 @@ namespace AgesOfConflict
     public class WorldGenerator : MonoBehaviour
     {
         [Header("Map Dimensions")]
-        [Range(100, 2000)] public int width = 1000;
-        [Range(100, 2000)] public int height = 1000;
+        [Range(100, 2000)]
+        public int width = 1000;
+
+        [Range(100, 2000)]
+        public int height = 1000;
 
         [Header("Terrain Noise")]
         public int seed = 42;
         public bool randomSeedOnStart = true;
         public float noiseScale = 0.004f;
-        [Range(1, 8)] public int octaves = 5;
-        [Range(0f, 1f)] public float persistence = 0.5f;
+
+        [Range(1, 8)]
+        public int octaves = 5;
+
+        [Range(0f, 1f)]
+        public float persistence = 0.5f;
         public float lacunarity = 2.0f;
 
         [Header("Sea & Land Thresholds")]
-        [Range(0f, 1f)] public float seaLevel = 0.46f;
-        [Range(0f, 1f)] public float deepOceanThreshold = 0.34f;
+        [Range(0f, 1f)]
+        public float seaLevel = 0.46f;
+
+        [Range(0f, 1f)]
+        public float deepOceanThreshold = 0.34f;
         public bool applyEdgeFalloff = true;
 
         [Header("Nations")]
-        [Range(2, 200)] public int nationCount = 30;
-        [Range(4, 50)] public int initialTerritoryRadius = 18;
+        [Range(2, 200)]
+        public int nationCount = 30;
+
+        [Range(4, 50)]
+        public int initialTerritoryRadius = 18;
         public int minCapitalDistance = 30;
 
         // Generated data
@@ -38,6 +51,15 @@ namespace AgesOfConflict
             return (x, y);
         }
 
+        public int CoordToIndex(int x, int y)
+        {
+            return y * width + x;
+        }
+
+        public int CoordToIndex(Vector2Int coord)
+        {
+            return CoordToIndex(coord.x, coord.y);
+        }
 
         public Vector2Int IndexToVec2(int index)
         {
@@ -102,13 +124,16 @@ namespace AgesOfConflict
                     int idx = rowOffset + x;
                     rawHeights[idx] = noiseHeight;
 
-                    if (noiseHeight < minNoise) minNoise = noiseHeight;
-                    if (noiseHeight > maxNoise) maxNoise = noiseHeight;
+                    if (noiseHeight < minNoise)
+                        minNoise = noiseHeight;
+                    if (noiseHeight > maxNoise)
+                        maxNoise = noiseHeight;
                 }
             }
 
             float noiseRange = maxNoise - minNoise;
-            if (noiseRange < 0.0001f) noiseRange = 1f;
+            if (noiseRange < 0.0001f)
+                noiseRange = 1f;
 
             // Pass 2: Normalize to [0, 1], apply edge falloff, assign terrain
             for (int y = 0; y < height; y++)
@@ -187,7 +212,8 @@ namespace AgesOfConflict
 
             foreach (var candidate in landCells)
             {
-                if (capitals.Count >= nationCount) break;
+                if (capitals.Count >= nationCount)
+                    break;
 
                 bool tooClose = false;
                 for (int c = 0; c < capitals.Count; c++)
@@ -273,8 +299,47 @@ namespace AgesOfConflict
 
         private string GenerateNationName(System.Random prng)
         {
-            string[] prefixes = { "Nord", "Val", "Aethel", "Khor", "Oron", "Zan", "Eld", "Drak", "Sol", "Lun", "Mor", "Rhun", "Ver", "Thar", "Kal", "Ar", "Ost", "Gond", "Rohan" };
-            string[] suffixes = { "ia", "land", "aria", "mark", "dor", "gard", "istan", "val", "reach", "shire", "realm", "berg", "onia", "terra", "ica", "moor" };
+            string[] prefixes =
+            {
+                "Nord",
+                "Val",
+                "Aethel",
+                "Khor",
+                "Oron",
+                "Zan",
+                "Eld",
+                "Drak",
+                "Sol",
+                "Lun",
+                "Mor",
+                "Rhun",
+                "Ver",
+                "Thar",
+                "Kal",
+                "Ar",
+                "Ost",
+                "Gond",
+                "Rohan",
+            };
+            string[] suffixes =
+            {
+                "ia",
+                "land",
+                "aria",
+                "mark",
+                "dor",
+                "gard",
+                "istan",
+                "val",
+                "reach",
+                "shire",
+                "realm",
+                "berg",
+                "onia",
+                "terra",
+                "ica",
+                "moor",
+            };
 
             string p = prefixes[prng.Next(prefixes.Length)];
             string s = suffixes[prng.Next(suffixes.Length)];

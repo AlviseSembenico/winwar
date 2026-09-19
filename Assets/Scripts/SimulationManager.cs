@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace AgesOfConflict
@@ -19,7 +20,7 @@ namespace AgesOfConflict
 
         [Header("War Settings")]
         [Tooltip("Maximum number of border cells a war may capture per second.")]
-        public float maximumWarAdvanceSpeed = 100f;
+        public float maximumWarAdvanceSpeed = 300f;
         public float warArrowWeight = 10f;
 
         [Tooltip("Treasury-strength advantage required to reach the maximum advance speed.")]
@@ -38,7 +39,9 @@ namespace AgesOfConflict
         [Min(0f)]
         public float wallBreachCasualtiesPerPixel = 10f;
 
-        [Tooltip("Rate at which casualties required to breach a wall cell disconnected from all defending cities decay.")]
+        [Tooltip(
+            "Rate at which casualties required to breach a wall cell disconnected from all defending cities decay."
+        )]
         [Min(0f)]
         public float isolatedWallCostDecayPerSecond = 0.1f;
 
@@ -81,8 +84,8 @@ namespace AgesOfConflict
         private AttackDirection inProgressAttackDirection;
         private bool attackDirectionGestureCancelled;
         private readonly List<DefensiveWall> defensiveWalls = new List<DefensiveWall>();
-        private bool[] isolatedFromCity;
         private float[] isolatedSince;
+        private bool[] connectedToCity;
         private DefensiveWall inProgressDefensiveWall;
         private DefensiveWall pendingDefensiveWall;
         private bool defensiveWallGestureCancelled;
@@ -786,8 +789,7 @@ namespace AgesOfConflict
             inProgressAttackDirection = null;
             attackDirectionGestureCancelled = false;
             defensiveWalls.Clear();
-            isolatedFromCity = null;
-            isolatedSince = null;
+
             inProgressDefensiveWall = null;
             pendingDefensiveWall = null;
             defensiveWallGestureCancelled = false;
@@ -813,6 +815,9 @@ namespace AgesOfConflict
             );
             cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
             tickTimer = 0f;
+            int size = worldGenerator.width * worldGenerator.height;
+            isolatedSince = new float[size];
+            connectedToCity = new bool[size];
         }
 
         private void OnGUI()
@@ -1145,6 +1150,14 @@ namespace AgesOfConflict
             if (warsChanged)
                 RefreshWarBorderHighlight();
             RefreshWarConnections();
+            // Reuse the existing renderer so neighbouring borders and city markers
+            // are refreshed too, rather than just painting over the captured pixels.
+            worldRenderer?.RenderWorld(
+                worldGenerator.Grid,
+                worldGenerator.Nations,
+                worldGenerator.width,
+                worldGenerator.height
+            );
         }
 
         // the border is of defender
@@ -1206,14 +1219,6 @@ namespace AgesOfConflict
                 city.nationId = war.attackerId;
                 attacker.cities.Add(city);
             }
-            // Reuse the existing renderer so neighbouring borders and city markers
-            // are refreshed too, rather than just painting over the captured pixels.
-            worldRenderer?.RenderWorld(
-                worldGenerator.Grid,
-                worldGenerator.Nations,
-                worldGenerator.width,
-                worldGenerator.height
-            );
         }
 
         private float GetConquestCost(int cellIndex, int attackerId)
@@ -1222,7 +1227,7 @@ namespace AgesOfConflict
             if (defenderId < 0 || defenderId == attackerId || !IsDefensiveWallCell(cellIndex, defenderId))
                 return 0f;
 
-            if (!IsIsolatedFromCity(cellIndex))
+            if (connectedToCity[cellIndex])
             {
                 return wallBreachCasualtiesPerPixel;
             }
@@ -1239,79 +1244,83 @@ namespace AgesOfConflict
             return false;
         }
 
-        private void RebuildIsolationCache()
+        private List<City> GetCities()
         {
-            int cellCount = worldGenerator.Grid.Length;
-            if (isolatedFromCity == null || isolatedFromCity.Length != cellCount)
-            {
-                isolatedFromCity = new bool[cellCount];
-                isolatedSince = new float[cellCount];
-            }
-
-            var cityCells = new HashSet<int>();
+            List<City> cities = new List<City>();
             foreach (Nation nation in worldGenerator.Nations)
-            foreach (City city in nation.cities)
-                if (city.nationId == nation.id)
-                    cityCells.Add(city.position.y * worldGenerator.width + city.position.x);
-
-            bool[] visited = new bool[cellCount];
-            bool[] nextIsolation = new bool[cellCount];
-            for (int start = 0; start < cellCount; start++)
             {
-                if (visited[start] || !worldGenerator.Grid[start].HasOwner)
-                    continue;
-
-                int nationId = worldGenerator.Grid[start].nationId;
-                bool reachesCity = false;
-                var component = new List<int>();
-                var cellsToVisit = new Queue<int>();
-                visited[start] = true;
-                cellsToVisit.Enqueue(start);
-                while (cellsToVisit.Count > 0)
+                foreach (City city in nation.cities)
                 {
-                    int current = cellsToVisit.Dequeue();
-                    component.Add(current);
-                    if (cityCells.Contains(current))
-                        reachesCity = true;
-                    int x = current % worldGenerator.width;
-                    int y = current / worldGenerator.width;
-                    for (int direction = 0; direction < frontDx.Length; direction++)
-                    {
-                        int nextX = x + frontDx[direction];
-                        int nextY = y + frontDy[direction];
-                        if (
-                            nextX < 0
-                            || nextX >= worldGenerator.width
-                            || nextY < 0
-                            || nextY >= worldGenerator.height
-                        )
-                            continue;
-                        int next = nextY * worldGenerator.width + nextX;
-                        if (visited[next] || worldGenerator.Grid[next].nationId != nationId)
-                            continue;
-                        visited[next] = true;
-                        cellsToVisit.Enqueue(next);
-                    }
+                    if (city.nationId != nation.id)
+                        throw new System.Exception(
+                            $"City {city.name} has nationId {city.nationId} but is listed in nation {nation.name} with id {nation.id}"
+                        );
+                    cities.Add(city);
                 }
-
-                bool isolated = !reachesCity;
-                foreach (int cell in component)
-                    nextIsolation[cell] = isolated;
             }
-
-            for (int cell = 0; cell < cellCount; cell++)
-            {
-                if (nextIsolation[cell] && !isolatedFromCity[cell])
-                    isolatedSince[cell] = Time.time;
-                else if (!nextIsolation[cell])
-                    isolatedSince[cell] = 0f;
-            }
-            isolatedFromCity = nextIsolation;
+            return cities;
         }
 
-        private bool IsIsolatedFromCity(int cellIndex)
+        private void RebuildIsolationCache()
         {
-            return isolatedFromCity != null && isolatedFromCity[cellIndex];
+            Cell[] grid = worldGenerator.Grid;
+            int cellCount = grid.Length;
+
+            bool[] connected = connectedToCity;
+            System.Array.Clear(connected, 0, cellCount);
+
+            var cities = GetCities();
+
+            foreach (City city in cities)
+            {
+                int x = city.position.x;
+                int y = city.position.y;
+                int cell = y * worldGenerator.width + x;
+                connected[cell] = true;
+            }
+
+            // Parallel.ForEach uses the worker pool and joins before returning,
+            // so captures cannot change ownership while searches are in flight.
+            // WebGL has no managed thread pool; a single nation also needs no dispatch.
+#if !UNITY_WEBGL || UNITY_EDITOR
+            Parallel.ForEach(
+                cities,
+                city => MarkCityConnectedCells(connected, worldGenerator.CoordToIndex(city.position), city.nationId)
+            );
+#endif
+            {
+                foreach (City city in cities)
+                {
+                    MarkCityConnectedCells(connected, worldGenerator.CoordToIndex(city.position), city.nationId);
+                }
+            }
+        }
+
+        private void MarkCityConnectedCells(bool[] connected, int cellId, int nationId)
+        {
+            Queue<int> cellsToVisit = new Queue<int>();
+            cellsToVisit.Enqueue(cellId);
+            int width = worldGenerator.width;
+            int height = worldGenerator.height;
+            while (cellsToVisit.Count > 0)
+            {
+                int current = cellsToVisit.Dequeue();
+                var pos = worldGenerator.IndexToVec2(current);
+                int x = pos.x;
+                int y = pos.y;
+                for (int direction = 0; direction < frontDx.Length; direction++)
+                {
+                    int nextX = x + frontDx[direction];
+                    int nextY = y + frontDy[direction];
+                    if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height)
+                        continue;
+                    int next = nextY * width + nextX;
+                    if (connected[next] || worldGenerator.Grid[next].nationId != nationId)
+                        continue;
+                    connected[next] = true;
+                    cellsToVisit.Enqueue(next);
+                }
+            }
         }
 
         private float GetConquestScore(
