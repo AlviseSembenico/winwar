@@ -23,6 +23,10 @@ namespace AgesOfConflict
         public float maximumWarAdvanceSpeed = 300f;
         public float warArrowWeight = 10f;
 
+        [Tooltip("Conquest-priority multiplier for cells disconnected from all defending cities.")]
+        [Min(1f)]
+        public float isolatedCellConquestMultiplier = 3f;
+
         [Tooltip("Treasury-strength advantage required to reach the maximum advance speed.")]
         public float strengthDeltaForMaximumSpeed = 20f;
 
@@ -728,6 +732,12 @@ namespace AgesOfConflict
             if (nationSimulator?.StepSimulation(tickInterval) == true)
                 warRoutesDirty = true;
             AdvanceWars(tickInterval);
+
+            // Remove completed arrows after this tick's territory changes.
+            attackDirections.RemoveAll(direction =>
+                direction.coveredCells.Count > 0
+                && direction.coveredCells.All(cell => worldGenerator.Grid[cell].nationId == direction.nationId)
+            );
         }
 
         private void HandleHotkeys()
@@ -1168,7 +1178,7 @@ namespace AgesOfConflict
                 return;
             warRoutesDirty = true;
 
-            // conquer the amount that are the further from the capital of the defending team.
+            // Prioritize vulnerable border cells, including pockets cut off from defending cities.
             Nation defender = worldGenerator.Nations[war.defenderId];
             Nation attacker = worldGenerator.Nations[war.attackerId];
             var defenderCapital = defender.capital;
@@ -1178,12 +1188,12 @@ namespace AgesOfConflict
                 .ToList();
             // Calculate the average distance
             float average = (float)distances.Average();
+            RebuildIsolationCache();
             // Jitter must be baked into the key once per cell; drawing it inside a
             // comparator makes comparisons inconsistent and Sort throws.
             border = border
                 .OrderByDescending(index => GetConquestScore(index, defenderCapital, average, war.attackerId))
                 .ToList();
-            RebuildIsolationCache();
             int capturedCells = 0;
             for (int i = 0; i < border.Count && capturedCells < amount; i++)
             {
@@ -1330,10 +1340,11 @@ namespace AgesOfConflict
             int attackerId
         )
         {
-            return (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
+            float score = (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
                 + Random.Range(0f, averageBorderDistance)
                 + CountEnemyNeighbours(cellIndex, attackerId) * 100f
                 + warArrowWeight * GetAttackDirectionConquestWeight(cellIndex, attackerId) * 100;
+            return connectedToCity[cellIndex] ? score : score * Mathf.Max(1f, isolatedCellConquestMultiplier);
         }
 
         private float GetAttackDirectionConquestWeight(int cellIndex, int attackerId)
