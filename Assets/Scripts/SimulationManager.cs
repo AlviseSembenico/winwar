@@ -32,6 +32,11 @@ namespace AgesOfConflict
         [Range(1f, 10f)]
         public float attackDirectionConquestScoreMaxMultiplier = 3f;
 
+        [Header("Defensive Wall Settings")]
+        [Tooltip("Gold charged for each unique map cell covered by a confirmed defensive wall.")]
+        [Min(0f)]
+        public float wallCostPerPixel = 10f;
+
         [Header("Simulation State")]
         public bool isRunning = true;
 
@@ -69,6 +74,10 @@ namespace AgesOfConflict
         private readonly List<AttackDirection> attackDirections = new List<AttackDirection>();
         private AttackDirection inProgressAttackDirection;
         private bool attackDirectionGestureCancelled;
+        private readonly List<DefensiveWall> defensiveWalls = new List<DefensiveWall>();
+        private DefensiveWall inProgressDefensiveWall;
+        private DefensiveWall pendingDefensiveWall;
+        private bool defensiveWallGestureCancelled;
         private float attackDirectionBannerExpiry;
         private string attackDirectionBanner;
         private bool warRoutesDirty;
@@ -104,6 +113,13 @@ namespace AgesOfConflict
             public readonly HashSet<int> coveredCells = new HashSet<int>();
         }
 
+        private class DefensiveWall
+        {
+            public int nationId;
+            public readonly List<Vector2> points = new List<Vector2>();
+            public readonly HashSet<int> coveredCells = new HashSet<int>();
+        }
+
         private struct FlagTarget
         {
             public int nationId;
@@ -124,9 +140,12 @@ namespace AgesOfConflict
             {
                 cameraController.OnRightClickTap += HandleRightClickTap;
                 cameraController.OnLeftClickTap += HandleNationSelection;
-                cameraController.OnShiftLeftDragStart += BeginAttackDirection;
-                cameraController.OnShiftLeftDrag += ContinueAttackDirection;
-                cameraController.OnShiftLeftDragEnd += EndAttackDirection;
+                cameraController.OnAttackDirectionDragStart += BeginAttackDirection;
+                cameraController.OnAttackDirectionDrag += ContinueAttackDirection;
+                cameraController.OnAttackDirectionDragEnd += EndAttackDirection;
+                cameraController.OnDefensiveWallDragStart += BeginDefensiveWall;
+                cameraController.OnDefensiveWallDrag += ContinueDefensiveWall;
+                cameraController.OnDefensiveWallDragEnd += EndDefensiveWall;
             }
             Regenerate();
         }
@@ -137,13 +156,21 @@ namespace AgesOfConflict
                 return;
             cameraController.OnRightClickTap -= HandleRightClickTap;
             cameraController.OnLeftClickTap -= HandleNationSelection;
-            cameraController.OnShiftLeftDragStart -= BeginAttackDirection;
-            cameraController.OnShiftLeftDrag -= ContinueAttackDirection;
-            cameraController.OnShiftLeftDragEnd -= EndAttackDirection;
+            cameraController.OnAttackDirectionDragStart -= BeginAttackDirection;
+            cameraController.OnAttackDirectionDrag -= ContinueAttackDirection;
+            cameraController.OnAttackDirectionDragEnd -= EndAttackDirection;
+            cameraController.OnDefensiveWallDragStart -= BeginDefensiveWall;
+            cameraController.OnDefensiveWallDrag -= ContinueDefensiveWall;
+            cameraController.OnDefensiveWallDragEnd -= EndDefensiveWall;
         }
 
         private void HandleNationSelection(Vector3 worldPos)
         {
+            if (pendingDefensiveWall != null)
+            {
+                ConfirmPendingDefensiveWall();
+                return;
+            }
             if (IsPointerOverNationPanel())
                 return;
             if (!TryGetCell(worldPos, out Cell cell))
@@ -167,6 +194,11 @@ namespace AgesOfConflict
 
         private void HandleRightClickTap(Vector3 worldPos)
         {
+            if (pendingDefensiveWall != null)
+            {
+                CancelPendingDefensiveWall("Defensive wall cancelled.");
+                return;
+            }
             if (IsPointerOverNationPanel())
                 return;
             if (!TryGetCell(worldPos, out Cell cell) || !cell.HasOwner || cell.nationId >= worldGenerator.Nations.Count)
@@ -284,6 +316,154 @@ namespace AgesOfConflict
             inProgressAttackDirection = null;
         }
 
+        private void BeginDefensiveWall(Vector3 worldPos)
+        {
+            inProgressDefensiveWall = null;
+            defensiveWallGestureCancelled = false;
+            if (pendingDefensiveWall != null)
+            {
+                defensiveWallGestureCancelled = true;
+                ShowDrawingBanner("Confirm or cancel the current defensive wall first.");
+                return;
+            }
+            if (IsPointerOverAttackDirectionUi())
+            {
+                defensiveWallGestureCancelled = true;
+                return;
+            }
+            if (!CanStartDefensiveWall(worldPos, out string reason))
+            {
+                CancelDefensiveWallDraft(reason);
+                return;
+            }
+
+            inProgressDefensiveWall = new DefensiveWall { nationId = selectedNation.id };
+            inProgressDefensiveWall.points.Add(new Vector2(worldPos.x, worldPos.y));
+        }
+
+        private void ContinueDefensiveWall(Vector3 worldPos)
+        {
+            if (defensiveWallGestureCancelled || inProgressDefensiveWall == null)
+                return;
+
+            Vector2 point = new Vector2(worldPos.x, worldPos.y);
+            Vector2 previous = inProgressDefensiveWall.points[inProgressDefensiveWall.points.Count - 1];
+            if (!IsMeaningfulScreenDistance(previous, point, 2f))
+                return;
+            if (!CanContinueDefensiveWall(previous, point, inProgressDefensiveWall.nationId, out string reason))
+            {
+                CancelDefensiveWallDraft(reason);
+                return;
+            }
+            inProgressDefensiveWall.points.Add(point);
+        }
+
+        private void EndDefensiveWall(Vector3 worldPos)
+        {
+            ContinueDefensiveWall(worldPos);
+            if (defensiveWallGestureCancelled || inProgressDefensiveWall == null)
+                return;
+
+            if (GetDefensiveWallScreenLength(inProgressDefensiveWall) < 8f)
+            {
+                inProgressDefensiveWall = null;
+                return;
+            }
+
+            BuildDefensiveWallCoveredCells(inProgressDefensiveWall);
+            if (inProgressDefensiveWall.coveredCells.Count == 0)
+            {
+                inProgressDefensiveWall = null;
+                return;
+            }
+            pendingDefensiveWall = inProgressDefensiveWall;
+            inProgressDefensiveWall = null;
+        }
+
+        private bool CanStartDefensiveWall(Vector3 worldPos, out string reason)
+        {
+            reason = null;
+            if (selectedNation == null)
+            {
+                reason = "Defensive wall cancelled: select a controlled nation first.";
+                return false;
+            }
+            if (!TryGetCell(worldPos, out Cell cell) || !cell.HasOwner)
+            {
+                reason = "Defensive wall cancelled: must start on controlled land.";
+                return false;
+            }
+            if (cell.nationId != selectedNation.id)
+            {
+                reason = "Defensive wall cancelled: must start in controlled territory.";
+                return false;
+            }
+            return true;
+        }
+
+        private bool CanContinueDefensiveWall(Vector2 from, Vector2 to, int nationId, out string reason)
+        {
+            reason = null;
+            int steps = Mathf.Max(
+                1,
+                Mathf.CeilToInt(Mathf.Max(Mathf.Abs(to.x - from.x), Mathf.Abs(to.y - from.y)) * 2f)
+            );
+            for (int step = 1; step <= steps; step++)
+            {
+                Vector2 point = Vector2.Lerp(from, to, step / (float)steps);
+                if (!TryGetCell(new Vector3(point.x, point.y), out Cell cell) || !cell.HasOwner)
+                {
+                    reason = "Defensive wall cancelled: cannot draw over sea or unclaimed land.";
+                    return false;
+                }
+                if (cell.nationId != nationId)
+                {
+                    reason = "Defensive wall cancelled: must stay in controlled territory.";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void CancelDefensiveWallDraft(string reason)
+        {
+            inProgressDefensiveWall = null;
+            defensiveWallGestureCancelled = true;
+            ShowDrawingBanner(reason);
+        }
+
+        private void ConfirmPendingDefensiveWall()
+        {
+            if (pendingDefensiveWall == null)
+                return;
+            Nation nation = worldGenerator.Nations[pendingDefensiveWall.nationId];
+            float cost = GetDefensiveWallCost(pendingDefensiveWall);
+            if (nation.treasury < cost)
+            {
+                ShowDrawingBanner(
+                    $"Defensive wall needs {cost:F0}g; {nation.name} has {nation.treasury:F0}g."
+                );
+                return;
+            }
+            nation.treasury -= cost;
+            defensiveWalls.Add(pendingDefensiveWall);
+            pendingDefensiveWall = null;
+            commandMessage = $"Defensive wall built for {cost:F0}g.";
+        }
+
+        private void CancelPendingDefensiveWall(string message)
+        {
+            pendingDefensiveWall = null;
+            inProgressDefensiveWall = null;
+            defensiveWallGestureCancelled = true;
+            ShowDrawingBanner(message);
+        }
+
+        private float GetDefensiveWallCost(DefensiveWall wall)
+        {
+            return wall.coveredCells.Count * wallCostPerPixel;
+        }
+
         private bool CanStartAttackDirection(Vector3 worldPos, out string reason)
         {
             reason = null;
@@ -328,8 +508,28 @@ namespace AgesOfConflict
         {
             inProgressAttackDirection = null;
             attackDirectionGestureCancelled = true;
-            attackDirectionBanner = reason;
+            ShowDrawingBanner(reason);
+        }
+
+        private void ShowDrawingBanner(string message)
+        {
+            attackDirectionBanner = message;
             attackDirectionBannerExpiry = Time.unscaledTime + 2.5f;
+        }
+
+        private float GetDefensiveWallScreenLength(DefensiveWall wall)
+        {
+            float length = 0f;
+            for (int i = 1; i < wall.points.Count; i++)
+                length += Vector2.Distance(WorldToGuiPoint(wall.points[i - 1]), WorldToGuiPoint(wall.points[i]));
+            return length;
+        }
+
+        private void BuildDefensiveWallCoveredCells(DefensiveWall wall)
+        {
+            wall.coveredCells.Clear();
+            for (int i = 1; i < wall.points.Count; i++)
+                AddAttackDirectionSegmentCells(wall.coveredCells, wall.points[i - 1], wall.points[i]);
         }
 
         private bool IsPointerOverAttackDirectionUi()
@@ -491,6 +691,11 @@ namespace AgesOfConflict
         {
             if (Input.GetKeyDown(KeyCode.Escape))
             {
+                if (pendingDefensiveWall != null || inProgressDefensiveWall != null)
+                {
+                    CancelPendingDefensiveWall("Defensive wall cancelled.");
+                    return;
+                }
                 selectedCity = null;
                 showContextMenu = false;
                 worldRenderer?.SetSelectedCity(null);
@@ -540,6 +745,10 @@ namespace AgesOfConflict
             attackDirections.Clear();
             inProgressAttackDirection = null;
             attackDirectionGestureCancelled = false;
+            defensiveWalls.Clear();
+            inProgressDefensiveWall = null;
+            pendingDefensiveWall = null;
+            defensiveWallGestureCancelled = false;
             warRoutesDirty = false;
             worldGenerator.GenerateWorld();
             currentSeed = worldGenerator.seed;
@@ -569,6 +778,7 @@ namespace AgesOfConflict
             if (worldGenerator == null)
                 return;
             DrawAttackDirections();
+            DrawDefensiveWalls();
             DrawWarFronts();
             DrawControlPanel();
             DrawRightPanel();
@@ -577,6 +787,7 @@ namespace AgesOfConflict
             if (!string.IsNullOrEmpty(commandMessage))
                 GUI.Box(new Rect(Screen.width / 2f - 190, 15, 380, 30), commandMessage);
             DrawAttackDirectionBanner();
+            DrawDefensiveWallCost();
         }
 
         private void DrawControlPanel()
@@ -622,8 +833,9 @@ namespace AgesOfConflict
             GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan");
             GUILayout.Label("• <b>LMB</b>: Select nation or city");
             GUILayout.Label("• <b>RMB</b>: Build cities in selected territory");
-            GUILayout.Label("• <b>Shift + drag</b>: Draw attack direction");
-            GUILayout.Label("• <b>Shift + click</b> an arrow: Remove it");
+            GUILayout.Label("• <b>A + drag</b>: Draw attack direction");
+            GUILayout.Label("• <b>A + click</b> an arrow: Remove it");
+            GUILayout.Label("• <b>D + drag</b>: Draft defensive wall");
             GUILayout.Label("• Territory expands automatically");
             GUILayout.EndArea();
         }
@@ -1339,6 +1551,25 @@ namespace AgesOfConflict
                 DrawAttackDirection(inProgressAttackDirection, new Color(blue.r, blue.g, blue.b, 0.75f));
         }
 
+        private void DrawDefensiveWalls()
+        {
+            if (mainCam == null)
+                return;
+            Color gray = new Color(0.55f, 0.55f, 0.55f, 1f);
+            foreach (DefensiveWall wall in defensiveWalls)
+                DrawDefensiveWall(wall, gray);
+            if (inProgressDefensiveWall != null)
+                DrawDefensiveWall(inProgressDefensiveWall, new Color(gray.r, gray.g, gray.b, 0.65f));
+            if (pendingDefensiveWall != null)
+                DrawDefensiveWall(pendingDefensiveWall, new Color(gray.r, gray.g, gray.b, 0.75f));
+        }
+
+        private void DrawDefensiveWall(DefensiveWall wall, Color color)
+        {
+            for (int i = 1; i < wall.points.Count; i++)
+                DrawMapLine(wall.points[i - 1], wall.points[i], color, 4f);
+        }
+
         private void DrawAttackDirection(AttackDirection direction, Color color)
         {
             if (direction.points.Count < 2)
@@ -1384,6 +1615,32 @@ namespace AgesOfConflict
                 new Rect(Screen.width / 2f - width / 2f, 52f, width, 26f),
                 attackDirectionBanner
             );
+        }
+
+        private void DrawDefensiveWallCost()
+        {
+            DefensiveWall wall = inProgressDefensiveWall ?? pendingDefensiveWall;
+            if (wall == null)
+                return;
+
+            int pixelCount = wall.coveredCells.Count;
+            if (inProgressDefensiveWall != null && wall.points.Count > 1)
+            {
+                var preview = new DefensiveWall();
+                preview.points.AddRange(wall.points);
+                BuildDefensiveWallCoveredCells(preview);
+                pixelCount = preview.coveredCells.Count;
+            }
+
+            float cost = pixelCount * wallCostPerPixel;
+            Vector2 anchor = WorldToGuiPoint(wall.points[wall.points.Count - 1]);
+            const float width = 285f;
+            float x = Mathf.Clamp(anchor.x + 12f, 10f, Screen.width - width - 10f);
+            float y = Mathf.Clamp(anchor.y + 12f, 10f, Screen.height - 34f);
+            string text = pendingDefensiveWall != null
+                ? $"Wall: {pixelCount} pixels • {cost:F0}g • LMB confirm / RMB or Esc cancel"
+                : $"Wall: {pixelCount} pixels • {cost:F0}g";
+            GUI.Box(new Rect(x, y, width, 24f), text);
         }
 
         private void DrawMobilization(War war)

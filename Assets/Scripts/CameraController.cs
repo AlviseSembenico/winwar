@@ -19,15 +19,19 @@ namespace AgesOfConflict
 
         public event Action<Vector3> OnRightClickTap;
         public event Action<Vector3> OnLeftClickTap;
-        public event Action<Vector3> OnShiftLeftDragStart;
-        public event Action<Vector3> OnShiftLeftDrag;
-        public event Action<Vector3> OnShiftLeftDragEnd;
+        public event Action<Vector3> OnAttackDirectionDragStart;
+        public event Action<Vector3> OnAttackDirectionDrag;
+        public event Action<Vector3> OnAttackDirectionDragEnd;
+        public event Action<Vector3> OnDefensiveWallDragStart;
+        public event Action<Vector3> OnDefensiveWallDrag;
+        public event Action<Vector3> OnDefensiveWallDragEnd;
 
         private Camera cam;
         private Vector3 dragOriginWorld, dragStartScreen, targetPosition, panVelocity;
         private float targetZoom;
         private bool dragging, moved;
-        private bool shiftLeftDragging;
+        private bool attackDirectionDragging;
+        private bool defensiveWallDragging;
         private int mapWidth = 1000, mapHeight = 1000;
 
         private void Awake()
@@ -79,13 +83,22 @@ namespace AgesOfConflict
         private bool Button(int button) => Input.GetMouseButton(button);
         private bool ButtonUp(int button) => Input.GetMouseButtonUp(button);
 
-        private bool IsShiftPressed()
+        private bool IsAttackDirectionModifierPressed()
         {
 #if ENABLE_INPUT_SYSTEM
             if (UnityEngine.InputSystem.Keyboard.current != null)
-                return UnityEngine.InputSystem.Keyboard.current.shiftKey.isPressed;
+                return UnityEngine.InputSystem.Keyboard.current.aKey.isPressed;
 #endif
-            return Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+            return Input.GetKey(KeyCode.A);
+        }
+
+        private bool IsDefensiveWallModifierPressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (UnityEngine.InputSystem.Keyboard.current != null)
+                return UnityEngine.InputSystem.Keyboard.current.dKey.isPressed;
+#endif
+            return Input.GetKey(KeyCode.D);
         }
 
         private void HandleMouse()
@@ -94,20 +107,32 @@ namespace AgesOfConflict
             Vector3 worldMouse = cam.ScreenToWorldPoint(mouse);
             if (ButtonDown(0))
             {
-                if (IsShiftPressed())
+                if (IsDefensiveWallModifierPressed())
                 {
-                    shiftLeftDragging = true;
-                    OnShiftLeftDragStart?.Invoke(worldMouse);
+                    defensiveWallDragging = true;
+                    OnDefensiveWallDragStart?.Invoke(worldMouse);
+                }
+                else if (IsAttackDirectionModifierPressed())
+                {
+                    attackDirectionDragging = true;
+                    OnAttackDirectionDragStart?.Invoke(worldMouse);
                 }
                 else
                     OnLeftClickTap?.Invoke(worldMouse);
             }
-            if (shiftLeftDragging && Button(0))
-                OnShiftLeftDrag?.Invoke(worldMouse);
-            if (shiftLeftDragging && ButtonUp(0))
+            if (attackDirectionDragging && Button(0))
+                OnAttackDirectionDrag?.Invoke(worldMouse);
+            if (attackDirectionDragging && ButtonUp(0))
             {
-                OnShiftLeftDragEnd?.Invoke(worldMouse);
-                shiftLeftDragging = false;
+                OnAttackDirectionDragEnd?.Invoke(worldMouse);
+                attackDirectionDragging = false;
+            }
+            if (defensiveWallDragging && Button(0))
+                OnDefensiveWallDrag?.Invoke(worldMouse);
+            if (defensiveWallDragging && ButtonUp(0))
+            {
+                OnDefensiveWallDragEnd?.Invoke(worldMouse);
+                defensiveWallDragging = false;
             }
             if (ButtonDown(1) || ButtonDown(2)) { dragStartScreen = mouse; dragOriginWorld = cam.ScreenToWorldPoint(mouse); dragging = true; moved = false; }
             if (dragging && (Button(1) || Button(2)))
