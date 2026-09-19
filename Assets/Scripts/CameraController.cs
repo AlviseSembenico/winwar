@@ -37,6 +37,9 @@ namespace AgesOfConflict
         private void Awake()
         {
             cam = GetComponent<Camera>();
+            // A rotated or scaled camera transform shears the orthographic view of the map quad,
+            // so normalize whatever transform the scene file ships with.
+            transform.rotation = Quaternion.identity; transform.localScale = Vector3.one;
             cam.orthographic = true; cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = backgroundColor;
             targetPosition = transform.position; targetZoom = cam.orthographicSize;
         }
