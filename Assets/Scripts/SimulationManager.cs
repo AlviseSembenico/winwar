@@ -28,6 +28,10 @@ namespace AgesOfConflict
         [Range(0.02f, 0.12f)]
         public float warFlagsPerBorderCell = 0.08f;
 
+        [Tooltip("Maximum multiplier applied to conquest priority beside a matching attack-direction arrow.")]
+        [Range(1f, 10f)]
+        public float attackDirectionConquestScoreMaxMultiplier = 3f;
+
         [Header("Simulation State")]
         public bool isRunning = true;
 
@@ -95,7 +99,9 @@ namespace AgesOfConflict
 
         private class AttackDirection
         {
+            public int nationId;
             public readonly List<Vector2> points = new List<Vector2>();
+            public readonly HashSet<int> coveredCells = new HashSet<int>();
         }
 
         private struct FlagTarget
@@ -241,7 +247,7 @@ namespace AgesOfConflict
                 return;
             }
 
-            inProgressAttackDirection = new AttackDirection();
+            inProgressAttackDirection = new AttackDirection { nationId = selectedNation.id };
             inProgressAttackDirection.points.Add(new Vector2(worldPos.x, worldPos.y));
         }
 
@@ -271,7 +277,10 @@ namespace AgesOfConflict
                 return;
 
             if (GetAttackDirectionScreenLength(inProgressAttackDirection) >= 8f)
+            {
+                BuildAttackDirectionCoveredCells(inProgressAttackDirection);
                 attackDirections.Add(inProgressAttackDirection);
+            }
             inProgressAttackDirection = null;
         }
 
@@ -405,6 +414,45 @@ namespace AgesOfConflict
                 return Vector2.Distance(point, from);
             float position = Mathf.Clamp01(Vector2.Dot(point - from, segment) / lengthSquared);
             return Vector2.Distance(point, from + segment * position);
+        }
+
+        private void BuildAttackDirectionCoveredCells(AttackDirection direction)
+        {
+            direction.coveredCells.Clear();
+            for (int i = 1; i < direction.points.Count; i++)
+                AddAttackDirectionSegmentCells(direction.coveredCells, direction.points[i - 1], direction.points[i]);
+        }
+
+        private void AddAttackDirectionSegmentCells(HashSet<int> cells, Vector2 start, Vector2 end)
+        {
+            int x = Mathf.FloorToInt(start.x);
+            int y = Mathf.FloorToInt(start.y);
+            int targetX = Mathf.FloorToInt(end.x);
+            int targetY = Mathf.FloorToInt(end.y);
+            int deltaX = Mathf.Abs(targetX - x);
+            int deltaY = Mathf.Abs(targetY - y);
+            int stepX = x < targetX ? 1 : -1;
+            int stepY = y < targetY ? 1 : -1;
+            int error = deltaX - deltaY;
+
+            while (true)
+            {
+                if (x >= 0 && x < worldGenerator.width && y >= 0 && y < worldGenerator.height)
+                    cells.Add(y * worldGenerator.width + x);
+                if (x == targetX && y == targetY)
+                    break;
+                int twiceError = error * 2;
+                if (twiceError > -deltaY)
+                {
+                    error -= deltaY;
+                    x += stepX;
+                }
+                if (twiceError < deltaX)
+                {
+                    error += deltaX;
+                    y += stepY;
+                }
+            }
         }
 
         private void Update()
@@ -910,9 +958,47 @@ namespace AgesOfConflict
             int attackerId
         )
         {
-            return (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
+            float score = (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
                 + Random.Range(0f, averageBorderDistance)
                 + CountEnemyNeighbours(cellIndex, attackerId) * 100f;
+            return score * GetAttackDirectionConquestWeight(cellIndex, attackerId);
+        }
+
+        private float GetAttackDirectionConquestWeight(int cellIndex, int attackerId)
+        {
+            if (attackDirections.Count == 0)
+                return 1f;
+
+            Vector2Int center = worldGenerator.IndexToVec2(cellIndex);
+            int arrowPixelCount = 0;
+            float totalDistance = 0f;
+            // This is intentionally a fixed 10x10 cell window: x/y offsets are [-5, +4].
+            for (int y = center.y - 5; y < center.y + 5; y++)
+            for (int x = center.x - 5; x < center.x + 5; x++)
+            {
+                if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
+                    continue;
+                int nearbyCell = y * worldGenerator.width + x;
+                if (!IsAttackDirectionPixel(nearbyCell, attackerId))
+                    continue;
+                totalDistance += Vector2.Distance(new Vector2(center.x, center.y), new Vector2(x, y));
+                arrowPixelCount++;
+            }
+            if (arrowPixelCount == 0)
+                return 1f;
+
+            float averageDistance = totalDistance / arrowPixelCount;
+            float maxWindowDistance = Mathf.Sqrt(50f);
+            float proximity = 1f - Mathf.Clamp01(averageDistance / maxWindowDistance);
+            return Mathf.Lerp(1f, attackDirectionConquestScoreMaxMultiplier, proximity);
+        }
+
+        private bool IsAttackDirectionPixel(int cellIndex, int attackerId)
+        {
+            foreach (AttackDirection direction in attackDirections)
+                if (direction.nationId == attackerId && direction.coveredCells.Contains(cellIndex))
+                    return true;
+            return false;
         }
 
         // Counts adjacent cells belonging to the specified enemy, including diagonals.
