@@ -20,6 +20,7 @@ namespace AgesOfConflict
         [Header("War Settings")]
         [Tooltip("Maximum number of border cells a war may capture per second.")]
         public float maximumWarAdvanceSpeed = 100f;
+        public float warArrowWeight = 10f;
 
         [Tooltip("Treasury-strength advantage required to reach the maximum advance speed.")]
         public float strengthDeltaForMaximumSpeed = 20f;
@@ -27,10 +28,6 @@ namespace AgesOfConflict
         [Tooltip("Number of flag pairs per map cell along an active border.")]
         [Range(0.02f, 0.12f)]
         public float warFlagsPerBorderCell = 0.08f;
-
-        [Tooltip("Maximum multiplier applied to conquest priority beside a matching attack-direction arrow.")]
-        [Range(1f, 10f)]
-        public float attackDirectionConquestScoreMaxMultiplier = 3f;
 
         [Header("Defensive Wall Settings")]
         [Tooltip("Gold charged for each unique map cell covered by a confirmed defensive wall.")]
@@ -58,6 +55,7 @@ namespace AgesOfConflict
         private int activeNations;
 
         private Camera mainCam;
+        private ConvolutionOperation conquestConvolution;
         private float tickTimer;
         private readonly List<Nation> sortedNations = new List<Nation>();
         private Nation hoveredNation;
@@ -111,6 +109,7 @@ namespace AgesOfConflict
             public int nationId;
             public readonly List<Vector2> points = new List<Vector2>();
             public readonly HashSet<int> coveredCells = new HashSet<int>();
+            public readonly Dictionary<int, Vector2> coveredCellDirections = new Dictionary<int, Vector2>();
         }
 
         private class DefensiveWall
@@ -131,6 +130,7 @@ namespace AgesOfConflict
         {
             mainCam = Camera.main;
             worldGenerator ??= GetComponent<WorldGenerator>() ?? gameObject.AddComponent<WorldGenerator>();
+            conquestConvolution = new ConvolutionOperation(worldGenerator);
             worldRenderer ??= GetComponent<WorldRenderer>() ?? gameObject.AddComponent<WorldRenderer>();
             nationSimulator ??= GetComponent<NationSimulator>() ?? gameObject.AddComponent<NationSimulator>();
             if (cameraController == null && mainCam != null)
@@ -185,11 +185,16 @@ namespace AgesOfConflict
             bool selectingFirstNation = selectedNation == null;
             selectedNation = worldGenerator.Nations[cell.nationId];
             if (selectingFirstNation)
+            {
+                selectedNation.population += 5000f;
                 lockControlledNation = true;
+            }
             selectedCity = FindCityAt(worldPos);
             worldRenderer.SetSelectedNation(selectedNation.id);
             worldRenderer.SetSelectedCity(selectedCity);
-            commandMessage = $"Now controlling {selectedNation.name}.";
+            commandMessage = selectingFirstNation
+                ? $"Now controlling {selectedNation.name}. Added 5,000 population."
+                : $"Now controlling {selectedNation.name}.";
         }
 
         private void HandleRightClickTap(Vector3 worldPos)
@@ -440,9 +445,7 @@ namespace AgesOfConflict
             float cost = GetDefensiveWallCost(pendingDefensiveWall);
             if (nation.treasury < cost)
             {
-                ShowDrawingBanner(
-                    $"Defensive wall needs {cost:F0}g; {nation.name} has {nation.treasury:F0}g."
-                );
+                ShowDrawingBanner($"Defensive wall needs {cost:F0}g; {nation.name} has {nation.treasury:F0}g.");
                 return;
             }
             nation.treasury -= cost;
@@ -529,7 +532,7 @@ namespace AgesOfConflict
         {
             wall.coveredCells.Clear();
             for (int i = 1; i < wall.points.Count; i++)
-                AddAttackDirectionSegmentCells(wall.coveredCells, wall.points[i - 1], wall.points[i]);
+                AddRasterizedSegmentCells(wall.coveredCells, wall.points[i - 1], wall.points[i]);
         }
 
         private bool IsPointerOverAttackDirectionUi()
@@ -596,7 +599,10 @@ namespace AgesOfConflict
         {
             float length = 0f;
             for (int i = 1; i < direction.points.Count; i++)
-                length += Vector2.Distance(WorldToGuiPoint(direction.points[i - 1]), WorldToGuiPoint(direction.points[i]));
+                length += Vector2.Distance(
+                    WorldToGuiPoint(direction.points[i - 1]),
+                    WorldToGuiPoint(direction.points[i])
+                );
             return length;
         }
 
@@ -619,11 +625,31 @@ namespace AgesOfConflict
         private void BuildAttackDirectionCoveredCells(AttackDirection direction)
         {
             direction.coveredCells.Clear();
+            direction.coveredCellDirections.Clear();
             for (int i = 1; i < direction.points.Count; i++)
-                AddAttackDirectionSegmentCells(direction.coveredCells, direction.points[i - 1], direction.points[i]);
+            {
+                Vector2 heading = (direction.points[i] - direction.points[i - 1]).normalized;
+                AddRasterizedSegmentCells(
+                    direction.coveredCells,
+                    direction.points[i - 1],
+                    direction.points[i],
+                    cell =>
+                    {
+                        if (direction.coveredCellDirections.TryGetValue(cell, out Vector2 existing))
+                            direction.coveredCellDirections[cell] = existing + heading;
+                        else
+                            direction.coveredCellDirections[cell] = heading;
+                    }
+                );
+            }
         }
 
-        private void AddAttackDirectionSegmentCells(HashSet<int> cells, Vector2 start, Vector2 end)
+        private void AddRasterizedSegmentCells(
+            HashSet<int> cells,
+            Vector2 start,
+            Vector2 end,
+            System.Action<int> onCellAdded = null
+        )
         {
             int x = Mathf.FloorToInt(start.x);
             int y = Mathf.FloorToInt(start.y);
@@ -638,7 +664,11 @@ namespace AgesOfConflict
             while (true)
             {
                 if (x >= 0 && x < worldGenerator.width && y >= 0 && y < worldGenerator.height)
-                    cells.Add(y * worldGenerator.width + x);
+                {
+                    int cell = y * worldGenerator.width + x;
+                    cells.Add(cell);
+                    onCellAdded?.Invoke(cell);
+                }
                 if (x == targetX && y == targetY)
                     break;
                 int twiceError = error * 2;
@@ -1170,47 +1200,53 @@ namespace AgesOfConflict
             int attackerId
         )
         {
-            float score = (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
+            return (worldGenerator.IndexToVec2(cellIndex) - defenderCapital).sqrMagnitude
                 + Random.Range(0f, averageBorderDistance)
-                + CountEnemyNeighbours(cellIndex, attackerId) * 100f;
-            return score * GetAttackDirectionConquestWeight(cellIndex, attackerId);
+                + CountEnemyNeighbours(cellIndex, attackerId) * 100f
+                + warArrowWeight * GetAttackDirectionConquestWeight(cellIndex, attackerId) * 100;
         }
 
         private float GetAttackDirectionConquestWeight(int cellIndex, int attackerId)
         {
-            if (attackDirections.Count == 0)
-                return 1f;
-
-            Vector2Int center = worldGenerator.IndexToVec2(cellIndex);
-            int arrowPixelCount = 0;
-            float totalDistance = 0f;
-            // This is intentionally a fixed 10x10 cell window: x/y offsets are [-5, +4].
-            for (int y = center.y - 5; y < center.y + 5; y++)
-            for (int x = center.x - 5; x < center.x + 5; x++)
-            {
-                if (x < 0 || x >= worldGenerator.width || y < 0 || y >= worldGenerator.height)
-                    continue;
-                int nearbyCell = y * worldGenerator.width + x;
-                if (!IsAttackDirectionPixel(nearbyCell, attackerId))
-                    continue;
-                totalDistance += Vector2.Distance(new Vector2(center.x, center.y), new Vector2(x, y));
-                arrowPixelCount++;
-            }
-            if (arrowPixelCount == 0)
-                return 1f;
-
-            float averageDistance = totalDistance / arrowPixelCount;
-            float maxWindowDistance = Mathf.Sqrt(50f);
-            float proximity = 1f - Mathf.Clamp01(averageDistance / maxWindowDistance);
-            return Mathf.Lerp(1f, attackDirectionConquestScoreMaxMultiplier, proximity);
+            return conquestConvolution.Evaluate(
+                worldGenerator.IndexToVec2(cellIndex),
+                10,
+                GetDirectionalArrowConvolutionKernel(attackerId)
+            );
         }
 
-        private bool IsAttackDirectionPixel(int cellIndex, int attackerId)
+        private System.Func<Vector2Int, Vector2Int, float> GetDirectionalArrowConvolutionKernel(int attackerId)
         {
-            foreach (AttackDirection direction in attackDirections)
-                if (direction.nationId == attackerId && direction.coveredCells.Contains(cellIndex))
-                    return true;
-            return false;
+            return (target, arrowPosition) =>
+            {
+                if (!TryGetAttackDirectionAt(arrowPosition, attackerId, out Vector2 arrowDirection))
+                    return 0f;
+
+                Vector2 towardTarget = new Vector2(target.x - arrowPosition.x, target.y - arrowPosition.y);
+                float distance = towardTarget.magnitude;
+                float proximity = 1f - Mathf.Clamp01(distance / Mathf.Sqrt(50f));
+                if (distance < 0.001f)
+                    return proximity;
+                float forwardAlignment = Mathf.Max(0f, Vector2.Dot(arrowDirection, towardTarget / distance));
+                return proximity * forwardAlignment;
+            };
+        }
+
+        private bool TryGetAttackDirectionAt(Vector2Int position, int attackerId, out Vector2 direction)
+        {
+            direction = Vector2.zero;
+            int cellIndex = position.y * worldGenerator.width + position.x;
+            foreach (AttackDirection attackDirection in attackDirections)
+            {
+                if (attackDirection.nationId != attackerId)
+                    continue;
+                if (attackDirection.coveredCellDirections.TryGetValue(cellIndex, out Vector2 arrowDirection))
+                    direction += arrowDirection;
+            }
+            if (direction.sqrMagnitude < 0.001f)
+                return false;
+            direction.Normalize();
+            return true;
         }
 
         // Counts adjacent cells belonging to the specified enemy, including diagonals.
@@ -1611,10 +1647,7 @@ namespace AgesOfConflict
             if (string.IsNullOrEmpty(attackDirectionBanner) || Time.unscaledTime > attackDirectionBannerExpiry)
                 return;
             const float width = 360f;
-            GUI.Box(
-                new Rect(Screen.width / 2f - width / 2f, 52f, width, 26f),
-                attackDirectionBanner
-            );
+            GUI.Box(new Rect(Screen.width / 2f - width / 2f, 52f, width, 26f), attackDirectionBanner);
         }
 
         private void DrawDefensiveWallCost()
@@ -1637,9 +1670,10 @@ namespace AgesOfConflict
             const float width = 285f;
             float x = Mathf.Clamp(anchor.x + 12f, 10f, Screen.width - width - 10f);
             float y = Mathf.Clamp(anchor.y + 12f, 10f, Screen.height - 34f);
-            string text = pendingDefensiveWall != null
-                ? $"Wall: {pixelCount} pixels • {cost:F0}g • LMB confirm / RMB or Esc cancel"
-                : $"Wall: {pixelCount} pixels • {cost:F0}g";
+            string text =
+                pendingDefensiveWall != null
+                    ? $"Wall: {pixelCount} pixels • {cost:F0}g • LMB confirm / RMB or Esc cancel"
+                    : $"Wall: {pixelCount} pixels • {cost:F0}g";
             GUI.Box(new Rect(x, y, width, 24f), text);
         }
 
