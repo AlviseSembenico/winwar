@@ -75,7 +75,7 @@ namespace AgesOfConflict
         private Nation contextNation;
         private City contextCity;
         private string commandMessage;
-        private string attackPercentage = "10";
+        private float attackPercentage = 10f;
         private readonly List<War> wars = new List<War>();
         private readonly List<AttackDirection> attackDirections = new List<AttackDirection>();
         private AttackDirection inProgressAttackDirection;
@@ -1976,20 +1976,16 @@ namespace AgesOfConflict
                 GUILayout.Label($"Army: {selectedNation.armyPopulation:F0} | Enemy: {contextNation.armyPopulation:F0}");
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("Commit army:", GUILayout.Width(125));
-                attackPercentage = GUILayout.TextField(attackPercentage, 3, GUILayout.Width(42));
-                GUILayout.Label("%");
+                // IMGUI text fields never receive typed characters in WebGL builds
+                // (known Unity input-system bug), so use a slider instead.
+                attackPercentage = Mathf.Round(GUILayout.HorizontalSlider(attackPercentage, 1f, 100f));
+                GUILayout.Label($"{attackPercentage:F0}%", GUILayout.Width(42));
                 GUILayout.EndHorizontal();
-                bool validPercent =
-                    float.TryParse(attackPercentage, out float parsedPercent)
-                    && parsedPercent > 0f
-                    && parsedPercent <= 100f;
-                GUI.enabled = validPercent;
                 if (GUILayout.Button("Attack", GUILayout.Height(30)))
                 {
-                    StartWar(parsedPercent);
+                    StartWar(attackPercentage);
                     showContextMenu = false;
                 }
-                GUI.enabled = true;
                 if (GUILayout.Button("Cancel"))
                     showContextMenu = false;
                 GUILayout.EndArea();
