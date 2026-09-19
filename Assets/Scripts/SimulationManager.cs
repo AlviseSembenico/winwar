@@ -101,6 +101,9 @@ namespace AgesOfConflict
         private Vector2 controlPanelScrollPosition;
         private float controlPanelContentHeight = 460f;
         private GUIStyle controlPanelLabelStyle;
+        private readonly WelcomeGuide welcomeGuide = new WelcomeGuide();
+        private int welcomeGuideClosedFrame = -1;
+        private bool IsGuideBlockingInput => welcomeGuide.IsOpen || Time.frameCount <= welcomeGuideClosedFrame;
 
         private float uiScale = 1f;
         private float uiWidth = 1280f;
@@ -206,6 +209,20 @@ namespace AgesOfConflict
                 cameraController.OnDefensiveWallDragEnd += EndDefensiveWall;
             }
             Regenerate();
+            if (welcomeGuide.ShouldShowOnStartup)
+                OpenWelcomeGuide();
+        }
+
+        private void OpenWelcomeGuide()
+        {
+            showContextMenu = false;
+            inProgressAttackDirection = null;
+            inProgressDefensiveWall = null;
+            attackDirectionGestureCancelled = true;
+            defensiveWallGestureCancelled = true;
+            welcomeGuide.Open(this);
+            if (cameraController != null)
+                cameraController.InputBlocked = true;
         }
 
         private void OnDestroy()
@@ -224,13 +241,13 @@ namespace AgesOfConflict
 
         private void HandleNationSelection(Vector3 worldPos)
         {
+            if (IsGuideBlockingInput || IsPointerOverAttackDirectionUi())
+                return;
             if (pendingDefensiveWall != null)
             {
                 ConfirmPendingDefensiveWall();
                 return;
             }
-            if (IsPointerOverNationPanel())
-                return;
             if (!TryGetCell(worldPos, out Cell cell))
                 return;
             if (!cell.HasOwner || cell.nationId >= worldGenerator.Nations.Count)
@@ -257,13 +274,13 @@ namespace AgesOfConflict
 
         private void HandleRightClickTap(Vector3 worldPos)
         {
+            if (IsGuideBlockingInput || IsPointerOverAttackDirectionUi())
+                return;
             if (pendingDefensiveWall != null)
             {
                 CancelPendingDefensiveWall("Defensive wall cancelled.");
                 return;
             }
-            if (IsPointerOverNationPanel())
-                return;
             if (!TryGetCell(worldPos, out Cell cell) || !cell.HasOwner || cell.nationId >= worldGenerator.Nations.Count)
             {
                 showContextMenu = false;
@@ -595,6 +612,8 @@ namespace AgesOfConflict
 
         private bool IsPointerOverAttackDirectionUi()
         {
+            if (IsGuideBlockingInput)
+                return true;
             Vector3 mouse = Input.mousePosition;
 #if ENABLE_INPUT_SYSTEM
             if (UnityEngine.InputSystem.Mouse.current != null)
@@ -741,6 +760,24 @@ namespace AgesOfConflict
 
         private void Update()
         {
+            if (cameraController != null)
+                cameraController.InputBlocked = IsGuideBlockingInput;
+            if (welcomeGuide.IsOpen)
+            {
+                if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.H))
+                {
+                    welcomeGuide.Close();
+                    welcomeGuideClosedFrame = Time.frameCount;
+                }
+                return;
+            }
+            if (IsGuideBlockingInput)
+                return;
+            if (Input.GetKeyDown(KeyCode.H))
+            {
+                OpenWelcomeGuide();
+                return;
+            }
             HandleHotkeys();
             UpdateHoveredNation();
             if (isRunning && nationSimulator != null)
@@ -878,6 +915,13 @@ namespace AgesOfConflict
                 DrawAttackDirections();
                 DrawDefensiveWalls();
                 DrawWarFronts();
+                if (welcomeGuide.IsOpen)
+                {
+                    welcomeGuide.Draw(uiWidth, uiHeight);
+                    if (!welcomeGuide.IsOpen)
+                        welcomeGuideClosedFrame = Time.frameCount;
+                    return;
+                }
                 DrawControlPanel();
                 DrawRightPanel();
                 if (showContextMenu)
@@ -914,6 +958,8 @@ namespace AgesOfConflict
                 $"<b>Controlling:</b> {(selectedNation == null ? "None (left-click a nation)" : selectedNation.name)}",
                 controlPanelLabelStyle
             );
+            if (GUILayout.Button("Help / How to play [H]", GUILayout.Height(30)))
+                OpenWelcomeGuide();
             selectedNationGrowsFaster = GUILayout.Toggle(
                 selectedNationGrowsFaster,
                 "Selected state grows 2× faster",
@@ -2124,24 +2170,6 @@ namespace AgesOfConflict
         private Rect GetNationPanelRect(Nation nation)
         {
             return new Rect(uiWidth - 285, 15, 270, 260 + nation.cities.Count * 22);
-        }
-
-        private bool IsPointerOverNationPanel()
-        {
-            Nation nation = selectedNation ?? hoveredNation;
-            if (nation == null)
-                return false;
-            Vector3 mouse = Input.mousePosition;
-#if ENABLE_INPUT_SYSTEM
-            if (UnityEngine.InputSystem.Mouse.current != null)
-            {
-                Vector2 position = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
-                mouse = new Vector3(position.x, position.y);
-            }
-#endif
-            Vector2 pointer = ScreenToGuiPoint(mouse);
-            return GetNationPanelRect(nation).Contains(pointer)
-                || (selectedNation != null && warsPanelRect.Contains(pointer));
         }
 
         private void DrawRightPanel()

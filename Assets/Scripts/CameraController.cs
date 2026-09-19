@@ -26,6 +26,8 @@ namespace AgesOfConflict
         public event Action<Vector3> OnDefensiveWallDrag;
         public event Action<Vector3> OnDefensiveWallDragEnd;
 
+        public bool InputBlocked { get; set; }
+
         private Camera cam;
         private Vector3 dragOriginWorld, dragStartScreen, targetPosition, panVelocity;
         private float targetZoom;
@@ -54,6 +56,14 @@ namespace AgesOfConflict
 
         private void Update()
         {
+            if (InputBlocked)
+            {
+                dragging = moved = attackDirectionDragging = defensiveWallDragging = false;
+                panVelocity = Vector3.zero;
+                targetPosition = transform.position;
+                targetZoom = cam.orthographicSize;
+                return;
+            }
             HandleKeyboardPan(); HandleMouse(); HandleScrollZoom();
             transform.position = Vector3.SmoothDamp(transform.position, targetPosition, ref panVelocity, smoothTime);
             cam.orthographicSize = Mathf.Lerp(cam.orthographicSize, targetZoom, Time.deltaTime * 15f);
