@@ -77,7 +77,7 @@ namespace AgesOfConflict
         private Nation selectedNation;
         private City selectedCity;
         private bool showContextMenu;
-        private Vector2 contextMenuScreenPos;
+        private Vector2 contextMenuGuiPos;
         private Vector2Int contextCellPos;
         private Nation contextNation;
         private City contextCity;
@@ -98,6 +98,46 @@ namespace AgesOfConflict
         private bool warRoutesDirty;
         private Rect warsPanelRect;
         private Vector2 warsScrollPosition;
+        private Vector2 controlPanelScrollPosition;
+        private float controlPanelContentHeight = 460f;
+        private GUIStyle controlPanelLabelStyle;
+
+        private float uiScale = 1f;
+        private float uiWidth = 1280f;
+        private float uiHeight = 720f;
+        private int screenHeight = 720;
+        private Matrix4x4 uiMatrix = Matrix4x4.identity;
+
+        private void InitializeUiScaling()
+        {
+            // Choose the scale once at startup; the game uses a fixed screen size for the session.
+            // Fit both axes so ultrawide displays do not make the panels taller than the screen.
+            int screenWidth = Mathf.Max(1, Screen.width);
+            screenHeight = Mathf.Max(1, Screen.height);
+            uiScale = Mathf.Min(screenWidth / 1280f, screenHeight / 720f);
+            uiWidth = screenWidth / uiScale;
+            uiHeight = screenHeight / uiScale;
+            uiMatrix = Matrix4x4.Scale(new Vector3(uiScale, uiScale, 1f));
+        }
+
+        private Vector2 ScreenToGuiPoint(Vector3 screenPoint)
+        {
+            return new Vector2(screenPoint.x, screenHeight - screenPoint.y) / uiScale;
+        }
+
+        private Rect GetControlPanelRect()
+        {
+            return new Rect(15f, 15f, 340f, Mathf.Min(controlPanelContentHeight + 39f, uiHeight - 30f));
+        }
+
+        private Rect GetContextMenuRect(bool warMenu)
+        {
+            float width = warMenu ? 250f : 230f;
+            float height = warMenu ? 140f : 215f;
+            float x = Mathf.Clamp(contextMenuGuiPos.x, 10f, uiWidth - width - 10f);
+            float y = Mathf.Clamp(contextMenuGuiPos.y, 10f, uiHeight - height - 10f);
+            return new Rect(x, y, width, height);
+        }
 
         public class War
         {
@@ -145,6 +185,7 @@ namespace AgesOfConflict
 
         private void Start()
         {
+            InitializeUiScaling();
             mainCam = Camera.main;
             worldGenerator ??= GetComponent<WorldGenerator>() ?? gameObject.AddComponent<WorldGenerator>();
             conquestConvolution = new ConvolutionOperation(worldGenerator);
@@ -250,7 +291,7 @@ namespace AgesOfConflict
                 mouse = new Vector3(pos.x, pos.y);
             }
 #endif
-            contextMenuScreenPos = new Vector2(mouse.x, Screen.height - mouse.y);
+            contextMenuGuiPos = ScreenToGuiPoint(mouse);
             showContextMenu = true;
         }
 
@@ -562,19 +603,15 @@ namespace AgesOfConflict
                 mouse = new Vector3(position.x, position.y);
             }
 #endif
-            Vector2 pointer = new Vector2(mouse.x, Screen.height - mouse.y);
-            if (new Rect(15, 15, 280, 405).Contains(pointer))
+            Vector2 pointer = ScreenToGuiPoint(mouse);
+            if (GetControlPanelRect().Contains(pointer))
                 return true;
-            if (pointer.x >= Screen.width - 285)
+            if (pointer.x >= uiWidth - 285)
                 return true;
             if (!showContextMenu)
                 return false;
             bool warMenu = contextNation != null && selectedNation != null && contextNation.id != selectedNation.id;
-            float width = warMenu ? 250f : 230f;
-            float height = warMenu ? 140f : 215f;
-            float x = Mathf.Clamp(contextMenuScreenPos.x, 10, Screen.width - width - 10);
-            float y = Mathf.Clamp(contextMenuScreenPos.y, 10, Screen.height - height - 10);
-            return new Rect(x, y, width, height).Contains(pointer);
+            return GetContextMenuRect(warMenu).Contains(pointer);
         }
 
         private bool TryRemoveAttackDirectionAt(Vector3 worldPos)
@@ -626,7 +663,7 @@ namespace AgesOfConflict
         private Vector2 WorldToGuiPoint(Vector2 worldPos)
         {
             Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(worldPos.x, worldPos.y));
-            return new Vector2(screen.x, Screen.height - screen.y);
+            return ScreenToGuiPoint(screen);
         }
 
         private static float DistanceToSegment(Vector2 point, Vector2 from, Vector2 to)
@@ -834,27 +871,48 @@ namespace AgesOfConflict
         {
             if (worldGenerator == null)
                 return;
-            DrawAttackDirections();
-            DrawDefensiveWalls();
-            DrawWarFronts();
-            DrawControlPanel();
-            DrawRightPanel();
-            if (showContextMenu)
-                DrawCityContextMenu();
-            if (!string.IsNullOrEmpty(commandMessage))
-                GUI.Box(new Rect(Screen.width / 2f - 190, 15, 380, 30), commandMessage);
-            DrawAttackDirectionBanner();
-            DrawDefensiveWallCost();
+            Matrix4x4 previousMatrix = GUI.matrix;
+            GUI.matrix = previousMatrix * uiMatrix;
+            try
+            {
+                DrawAttackDirections();
+                DrawDefensiveWalls();
+                DrawWarFronts();
+                DrawControlPanel();
+                DrawRightPanel();
+                if (showContextMenu)
+                    DrawCityContextMenu();
+                if (!string.IsNullOrEmpty(commandMessage))
+                    GUI.Box(new Rect(uiWidth / 2f - 190, 15, 380, 30), commandMessage);
+                DrawAttackDirectionBanner();
+                DrawDefensiveWallCost();
+            }
+            finally
+            {
+                GUI.matrix = previousMatrix;
+            }
         }
 
         private void DrawControlPanel()
         {
-            GUI.Box(new Rect(15, 15, 280, 405), "Ages of Conflict - Simulation");
-            GUILayout.BeginArea(new Rect(25, 40, 260, 370));
-            GUILayout.Label($"<b>Resolution:</b> {worldGenerator.width} x {worldGenerator.height}");
-            GUILayout.Label($"<b>Seed:</b> {currentSeed} | <b>Nations:</b> {activeNations}");
+            controlPanelLabelStyle ??= new GUIStyle(GUI.skin.label) { wordWrap = true, richText = true };
+            Rect rect = GetControlPanelRect();
+            GUI.Box(rect, "Ages of Conflict - Simulation");
+            GUILayout.BeginArea(new Rect(rect.x + 10f, rect.y + 25f, rect.width - 20f, rect.height - 35f));
+            controlPanelScrollPosition = GUILayout.BeginScrollView(controlPanelScrollPosition);
+            // Reserve scrollbar space even when it is hidden so wrapping and measured height stay stable.
+            float contentWidth =
+                rect.width - 20f - GUI.skin.verticalScrollbar.fixedWidth
+                - GUI.skin.verticalScrollbar.margin.left;
+            GUILayout.BeginVertical(GUILayout.Width(contentWidth), GUILayout.ExpandHeight(false));
             GUILayout.Label(
-                $"<b>Controlling:</b> {(selectedNation == null ? "None (left-click a nation)" : selectedNation.name)}"
+                $"<b>Resolution:</b> {worldGenerator.width} x {worldGenerator.height}",
+                controlPanelLabelStyle
+            );
+            GUILayout.Label($"<b>Seed:</b> {currentSeed} | <b>Nations:</b> {activeNations}", controlPanelLabelStyle);
+            GUILayout.Label(
+                $"<b>Controlling:</b> {(selectedNation == null ? "None (left-click a nation)" : selectedNation.name)}",
+                controlPanelLabelStyle
             );
             selectedNationGrowsFaster = GUILayout.Toggle(
                 selectedNationGrowsFaster,
@@ -869,7 +927,10 @@ namespace AgesOfConflict
             );
             GUI.enabled = true;
             if (nationSimulator != null)
-                GUILayout.Label($"<b>Colonization:</b> {nationSimulator.ColonizedPercentage:F1}% Claimed");
+                GUILayout.Label(
+                    $"<b>Colonization:</b> {nationSimulator.ColonizedPercentage:F1}% Claimed",
+                    controlPanelLabelStyle
+                );
             GUILayout.Space(8);
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(isRunning ? "⏸ Pause [Space]" : "▶ Play [Space]", GUILayout.Height(30)))
@@ -887,13 +948,18 @@ namespace AgesOfConflict
             if (GUILayout.Button("🎯 Reset Camera [F]", GUILayout.Height(24)))
                 cameraController?.FocusOnMap(worldGenerator.width, worldGenerator.height);
             GUILayout.Space(5);
-            GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan");
-            GUILayout.Label("• <b>LMB</b>: Select nation or city");
-            GUILayout.Label("• <b>RMB</b>: Build cities in selected territory");
-            GUILayout.Label("• <b>A + drag</b>: Draw attack direction");
-            GUILayout.Label("• <b>A + click</b> an arrow: Remove it");
-            GUILayout.Label("• <b>D + drag</b>: Draft defensive wall");
-            GUILayout.Label("• Territory expands automatically");
+            GUILayout.Label("• <b>Scroll</b>: Zoom | <b>Arrow keys/MMB</b>: Pan", controlPanelLabelStyle);
+            GUILayout.Label("• <b>LMB</b>: Select nation or city", controlPanelLabelStyle);
+            GUILayout.Label("• <b>RMB</b>: Build cities in selected territory", controlPanelLabelStyle);
+            GUILayout.Label("• <b>A + drag</b>: Draw attack direction", controlPanelLabelStyle);
+            GUILayout.Label("• <b>A + click</b> an arrow: Remove it", controlPanelLabelStyle);
+            GUILayout.Label("• <b>D + drag</b>: Draft defensive wall", controlPanelLabelStyle);
+            GUILayout.Label("• Territory expands automatically", controlPanelLabelStyle);
+            GUILayout.EndVertical();
+            // Layout rectangles are final during repaint; use the result for the next layout pass.
+            if (Event.current.type == EventType.Repaint)
+                controlPanelContentHeight = GUILayoutUtility.GetLastRect().height;
+            GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
@@ -907,7 +973,7 @@ namespace AgesOfConflict
                 mouse = new Vector3(position.x, position.y);
             }
 #endif
-            contextMenuScreenPos = new Vector2(mouse.x, Screen.height - mouse.y);
+            contextMenuGuiPos = ScreenToGuiPoint(mouse);
             showContextMenu = true;
         }
 
@@ -1774,9 +1840,16 @@ namespace AgesOfConflict
             Matrix4x4 previousMatrix = GUI.matrix;
             Color previousColor = GUI.color;
             GUI.color = color;
-            GUIUtility.RotateAroundPivot(Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg, from);
+            // Apply the local translation/rotation before the UI scale so the pivot stays on the map.
+            GUI.matrix =
+                previousMatrix
+                * Matrix4x4.TRS(
+                    new Vector3(from.x, from.y, 0f),
+                    Quaternion.Euler(0f, 0f, Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg),
+                    Vector3.one
+                );
             GUI.DrawTexture(
-                new Rect(from.x, from.y - thickness / 2f, direction.magnitude, thickness),
+                new Rect(0f, -thickness / 2f, direction.magnitude, thickness),
                 Texture2D.whiteTexture
             );
             GUI.matrix = previousMatrix;
@@ -1788,7 +1861,7 @@ namespace AgesOfConflict
             if (string.IsNullOrEmpty(attackDirectionBanner) || Time.unscaledTime > attackDirectionBannerExpiry)
                 return;
             const float width = 360f;
-            GUI.Box(new Rect(Screen.width / 2f - width / 2f, 52f, width, 26f), attackDirectionBanner);
+            GUI.Box(new Rect(uiWidth / 2f - width / 2f, 52f, width, 26f), attackDirectionBanner);
         }
 
         private void DrawDefensiveWallCost()
@@ -1809,8 +1882,8 @@ namespace AgesOfConflict
             float cost = pixelCount * wallCostPerPixel;
             Vector2 anchor = WorldToGuiPoint(wall.points[wall.points.Count - 1]);
             const float width = 285f;
-            float x = Mathf.Clamp(anchor.x + 12f, 10f, Screen.width - width - 10f);
-            float y = Mathf.Clamp(anchor.y + 12f, 10f, Screen.height - 34f);
+            float x = Mathf.Clamp(anchor.x + 12f, 10f, uiWidth - width - 10f);
+            float y = Mathf.Clamp(anchor.y + 12f, 10f, uiHeight - 34f);
             string text =
                 pendingDefensiveWall != null
                     ? $"Wall: {pixelCount} pixels • {cost:F0}g • LMB confirm / RMB or Esc cancel"
@@ -1850,9 +1923,10 @@ namespace AgesOfConflict
             Vector3 screen = mainCam.WorldToScreenPoint(new Vector3(head.x, head.y, 0f));
             if (screen.z <= 0f)
                 return;
+            Vector2 guiPoint = ScreenToGuiPoint(screen);
             Color previous = GUI.color;
             GUI.color = blue;
-            GUI.DrawTexture(new Rect(screen.x - 4f, Screen.height - screen.y - 4f, 8f, 8f), Texture2D.whiteTexture);
+            GUI.DrawTexture(new Rect(guiPoint.x - 4f, guiPoint.y - 4f, 8f, 8f), Texture2D.whiteTexture);
             GUI.color = previous;
         }
 
@@ -1867,19 +1941,7 @@ namespace AgesOfConflict
             Vector3 b = mainCam.WorldToScreenPoint(new Vector3(end.x, end.y, 0f));
             if (a.z <= 0f || b.z <= 0f)
                 return;
-            Vector2 from = new Vector2(a.x, Screen.height - a.y);
-            Vector2 to = new Vector2(b.x, Screen.height - b.y);
-            Vector2 direction = to - from;
-            Matrix4x4 previousMatrix = GUI.matrix;
-            Color previousColor = GUI.color;
-            GUI.color = color;
-            GUIUtility.RotateAroundPivot(Mathf.Atan2(direction.y, direction.x) * Mathf.Rad2Deg, from);
-            GUI.DrawTexture(
-                new Rect(from.x, from.y - thickness / 2f, direction.magnitude, thickness),
-                Texture2D.whiteTexture
-            );
-            GUI.matrix = previousMatrix;
-            GUI.color = previousColor;
+            DrawGuiLine(ScreenToGuiPoint(a), ScreenToGuiPoint(b), color, thickness);
         }
 
         private bool TryGetWarLabelPositions(War war, out Vector2 attackerLabel, out Vector2 defenderLabel)
@@ -1970,7 +2032,8 @@ namespace AgesOfConflict
                 padY = 4f;
             float w = size.x + padX * 2;
             float h = size.y + padY * 2;
-            Rect bg = new Rect(screen.x - w / 2f, Screen.height - screen.y - h / 2f, w, h);
+            Vector2 guiPoint = ScreenToGuiPoint(screen);
+            Rect bg = new Rect(guiPoint.x - w / 2f, guiPoint.y - h / 2f, w, h);
 
             Color previous = GUI.color;
             GUI.color = new Color(0f, 0f, 0f, 0.8f);
@@ -1983,14 +2046,12 @@ namespace AgesOfConflict
 
         private void DrawCityContextMenu()
         {
-            if (contextNation != null && selectedNation != null && contextNation.id != selectedNation.id)
+            bool warMenu = contextNation != null && selectedNation != null && contextNation.id != selectedNation.id;
+            Rect rect = GetContextMenuRect(warMenu);
+            if (warMenu)
             {
-                const float warWidth = 250,
-                    warHeight = 140;
-                float warX = Mathf.Clamp(contextMenuScreenPos.x, 10, Screen.width - warWidth - 10),
-                    warY = Mathf.Clamp(contextMenuScreenPos.y, 10, Screen.height - warHeight - 10);
-                GUI.Box(new Rect(warX, warY, warWidth, warHeight), "War Declaration");
-                GUILayout.BeginArea(new Rect(warX + 10, warY + 25, warWidth - 20, warHeight - 30));
+                GUI.Box(rect, "War Declaration");
+                GUILayout.BeginArea(new Rect(rect.x + 10, rect.y + 25, rect.width - 20, rect.height - 30));
                 float strength = nationSimulator.ComputeStrength(contextNation);
                 GUILayout.Label($"Attack <b>{contextNation.name}</b>?");
                 GUILayout.Label($"Army: {selectedNation.armyPopulation:F0} | Enemy: {contextNation.armyPopulation:F0}");
@@ -2011,12 +2072,8 @@ namespace AgesOfConflict
                 GUILayout.EndArea();
                 return;
             }
-            const float width = 230,
-                height = 215;
-            float x = Mathf.Clamp(contextMenuScreenPos.x, 10, Screen.width - width - 10),
-                y = Mathf.Clamp(contextMenuScreenPos.y, 10, Screen.height - height - 10);
-            GUI.Box(new Rect(x, y, width, height), "🏰 City Construction");
-            GUILayout.BeginArea(new Rect(x + 10, y + 25, width - 20, height - 30));
+            GUI.Box(rect, "🏰 City Construction");
+            GUILayout.BeginArea(new Rect(rect.x + 10, rect.y + 25, rect.width - 20, rect.height - 30));
             GUILayout.Label($"<b>{contextNation.name}</b>");
             GUILayout.Label($"Location: ({contextCellPos.x}, {contextCellPos.y})");
             GUILayout.Label($"Treasury: <color=#FFD700>{contextNation.treasury:F0} gold</color>");
@@ -2066,7 +2123,7 @@ namespace AgesOfConflict
 
         private Rect GetNationPanelRect(Nation nation)
         {
-            return new Rect(Screen.width - 285, 15, 270, 260 + nation.cities.Count * 22);
+            return new Rect(uiWidth - 285, 15, 270, 260 + nation.cities.Count * 22);
         }
 
         private bool IsPointerOverNationPanel()
@@ -2082,7 +2139,7 @@ namespace AgesOfConflict
                 mouse = new Vector3(position.x, position.y);
             }
 #endif
-            Vector2 pointer = new Vector2(mouse.x, Screen.height - mouse.y);
+            Vector2 pointer = ScreenToGuiPoint(mouse);
             return GetNationPanelRect(nation).Contains(pointer)
                 || (selectedNation != null && warsPanelRect.Contains(pointer));
         }
@@ -2139,8 +2196,8 @@ namespace AgesOfConflict
             }
 
             const int width = 270;
-            int height = Mathf.Min(40 + activeWars.Count * 84, Mathf.Max(100, Screen.height - top - 15));
-            float x = Screen.width - 285;
+            int height = Mathf.Min(40 + activeWars.Count * 84, Mathf.Max(100, Mathf.FloorToInt(uiHeight) - top - 15));
+            float x = uiWidth - 285;
             warsPanelRect = new Rect(x, top, width, height);
             GUI.Box(warsPanelRect, "⚔ Nations at War");
             GUILayout.BeginArea(new Rect(x + 10, top + 25, width - 20, height - 30));
@@ -2185,8 +2242,8 @@ namespace AgesOfConflict
             sortedNations.AddRange(worldGenerator.Nations);
             sortedNations.Sort((a, b) => b.territorySize.CompareTo(a.territorySize));
             int count = Mathf.Min(max, sortedNations.Count);
-            GUI.Box(new Rect(Screen.width - 285, top, 270, 45 + count * 22), "🏆 Nations");
-            GUILayout.BeginArea(new Rect(Screen.width - 275, top + 27, 250, count * 22));
+            GUI.Box(new Rect(uiWidth - 285, top, 270, 45 + count * 22), "🏆 Nations");
+            GUILayout.BeginArea(new Rect(uiWidth - 275, top + 27, 250, count * 22));
             for (int i = 0; i < count; i++)
                 GUILayout.Label(
                     $"#{i + 1} {sortedNations[i].name}: {sortedNations[i].territorySize:N0} px | 🏰{sortedNations[i].cities.Count}"
